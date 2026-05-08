@@ -1202,7 +1202,197 @@ Directly optimize stochastic policy, replace hard argmax with preference distrib
 
 ---
 
-## 10. Summary Table: Multiple Threads Combined
+## 10. Unifying Perspective: Optimal Control and RL Are Fundamentally Doing the Same Thing
+
+Optimal Control and RL are often taught as separate fields. But viewed through three core dimensions -- **rollout (imagining the future), optimization (making decisions), and data (requirements)** -- they are different engineering trade-offs for the same problem.
+
+### 10.1 Dimension One: Rollout / Imagination -- How to "Imagine" the Future
+
+Making decisions requires predicting the future. Optimal Control and RL do this differently:
+
+**Optimal Control: Model-based online rollout**
+
+```text
+Has an explicit dynamics model:
+  s_{t+1} = f(s_t, a_t)       (deterministic)
+  s_{t+1} ~ P(·|s_t, a_t)     (stochastic, but usually with simple assumptions)
+
+Rollout method:
+  Use this model to simulate multiple steps forward,
+  predict consequences of different action sequences
+  → MPC (Model Predictive Control) is the typical approach
+
+Uncertainty handling:
+  Usually simplified assumptions (linear, Gaussian, small perturbations)
+  Because it runs in real-time, assumptions can be rough --
+  each step gets fresh state feedback from the environment to correct
+
+```
+
+Essentially, Optimal Control is also an agent-environment interaction model:
+
+```text
+Offline preparation: calibrate a few dynamics parameters (mass, friction, gear ratios, etc.)
+Online execution:    use the model for rollout + use real-time sensor data to correct
+
+It assumes a dynamics model, plus real-time environment parameter feedback.
+```
+
+**RL: Model-free offline rollout**
+
+```text
+No explicit dynamics model.
+Rollout through direct interaction with the environment (or simulator).
+
+Input requirements are more relaxed:
+  Optimal Control needs precise low-dimensional states (position, velocity, angle)
+  RL can accept fuzzier high-dimensional inputs (images, point clouds, raw sensor data)
+  → Because the model itself learns to extract useful information from high-dimensional inputs
+
+The model is learned offline:
+  Through massive environment interactions, train Q / V / Policy
+  Compress "how to make good decisions from the current state" into network parameters
+  → Rollout knowledge is implicitly encoded in the network, not in explicit dynamics equations
+```
+
+Comparison:
+
+```text
+Optimal Control:
+  Explicit model + online rollout + precise low-dim input + real-time correction
+  → "I know how the world works; I re-simulate at every step"
+
+RL:
+  Implicit model (encoded in network) + offline training + high-dim input + forward inference at deployment
+  → "I've seen enough scenarios during training; I react directly at deployment"
+```
+
+### 10.2 Dimension Two: Optimization -- When Does Optimization Happen
+
+**Optimal Control: Online optimization**
+
+```text
+Solves an optimization problem online at every timestep:
+  a* = argmin_a J(a, s_current)
+
+MPC at each step:
+  1. Get current state
+  2. Roll out multiple steps using the model
+  3. Solve for optimal action sequence online
+  4. Execute the first action
+  5. Repeat next step
+
+Can also precompute offline lookup tables:
+  Pre-solve for the range of possible inputs
+  Look up online
+  → Suitable for low-dimensional, enumerable scenarios
+```
+
+**RL: Offline optimization**
+
+```text
+Optimization (training) is completed offline:
+  Learn Q / V / Policy through massive environment interaction
+
+Online deployment does no optimization, only forward inference:
+  a = π_θ(s)  or  a = argmax Q_θ(s,a)
+  → One forward pass, directly outputs action
+  → Far less computation than online optimization
+```
+
+Comparison:
+
+| Dimension | Optimal Control | RL |
+|---|---|---|
+| Optimization happens | Online (solve at every step) | Offline (training phase) |
+| Deployment compute | High (solve optimization each step) | Low (one forward pass) |
+| Adapting to new scenarios | Strong (re-optimize in real-time) | Weak (needs retraining or generalization) |
+| Model requirement | Needs explicit dynamics | Not needed (model-free) |
+
+### 10.3 Dimension Three: Data -- Where Does It Come From, How Is It Used
+
+**Optimal Control: Relies on precise parameters, doesn't need large datasets**
+
+```text
+The "data" needed is environment model parameters:
+  Mass, inertia, friction coefficients, transmission characteristics...
+  → Usually obtained through physical measurement or system identification
+  → Limited number of parameters (tens to hundreds)
+
+Online data = real-time sensor feedback
+  → Used to correct model prediction errors
+  → Not used for training, used for online correction
+```
+
+**RL: Relies on massive interaction data, compressed into network parameters**
+
+```text
+Needs large volumes of (s, a, r, s') interaction data
+  → From simulator or real-environment rollouts
+  → Data volume can be millions to billions of transitions
+
+This data is "compressed" into network parameters during training:
+  Offline information → training → network parameters → online inference
+
+RL's training process is essentially information compression:
+  Compress "what to do in various states" from massive experience
+  into a network that can do fast inference
+```
+
+The significance of this compression:
+
+```text
+At online deployment, no need to re-interact with the environment
+The network has already encoded offline interaction experience
+One forward pass outputs the action
+
+→ RL model = compressed representation of offline experience, for fast online decisions
+```
+
+### 10.4 Unified View: Different Engineering Trade-offs for the Same Problem
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│               The core problem is the same:                  │
+│                                                              │
+│    Given the current state, choose the optimal               │
+│    (or good-enough) action                                   │
+│                                                              │
+├──────────────┬───────────────────┬───────────────────────────┤
+│   Dimension  │ Optimal Control   │ RL                        │
+├──────────────┼───────────────────┼───────────────────────────┤
+│ Rollout      │ Explicit model,   │ Implicit model (encoded   │
+│              │ online simulation │ in network)               │
+│ Input req.   │ Precise low-dim   │ Accepts high-dim fuzzy    │
+│              │ states            │ inputs                    │
+│ Optimization │ Online solving    │ Offline training,         │
+│              │                   │ online inference          │
+│ Data needs   │ Few precise       │ Massive interaction data  │
+│              │ parameters        │                           │
+│ Deploy cost  │ High (online opt) │ Low (forward pass)        │
+│ Env. adapt.  │ Real-time correct.│ Generalization ability    │
+│ Best for     │ Known model,      │ Unknown model,            │
+│              │ low-dim           │ high-dim                  │
+└──────────────┴───────────────────┴───────────────────────────┘
+```
+
+So Optimal Control and RL are not opposites, but rather:
+
+```text
+Different engineering choices for the same decision problem under different constraints:
+
+Know dynamics + low-dim input + need real-time adaptation → Optimal Control
+Don't know dynamics + high-dim input + can train offline  → RL
+
+In practice, the two often fuse:
+  - Model-based RL (Dreamer, MBPO): learn a dynamics model, use it for rollout
+  - Autonomous driving hierarchies: high-level RL for planning, low-level MPC for control
+  - Sim2Real: train with RL offline in simulation, deploy with sensor correction online
+```
+
+---
+
+## 11. Summary Table: Multiple Threads Combined
 
 | Dimension | Early approach | Problem | Subsequent fix | More advanced direction |
 |---|---|---|---|---|
@@ -1215,7 +1405,7 @@ Directly optimize stochastic policy, replace hard argmax with preference distrib
 
 ---
 
-## 11. One-Sentence Summaries of Typical Algorithms
+## 12. One-Sentence Summaries of Typical Algorithms
 
 **Q-learning / DQN**: Learn Q via MSE, make decisions via argmax, improve data utilization via replay. The problem is that max Q amplifies estimation errors.
 
@@ -1229,7 +1419,7 @@ Directly optimize stochastic policy, replace hard argmax with preference distrib
 
 ---
 
-## 12. RL vs SL: Similar Optimization Frameworks, Fundamentally Different Sampling Structures
+## 13. RL vs SL: Similar Optimization Frameworks, Fundamentally Different Sampling Structures
 
 ### 12.1 Similarity: Both Ultimately Minimize a Loss
 
@@ -1379,7 +1569,7 @@ This is why RL needs so many seemingly ad-hoc stabilization tricks: not because 
 
 ---
 
-## 13. Final Understanding
+## 14. Final Understanding
 
 RL is not simply optimizing a clean loss. RL is optimizing within a closed loop where sampling, value estimation, and decision-making mutually influence each other.
 
