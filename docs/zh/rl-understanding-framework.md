@@ -1368,6 +1368,37 @@ MPC / LQR 等方法通常需要：
 
 RL 不需要这些：没有显式 reference，没有约束形式要求，reward 可以是任意可计算的标量。
 
+而且 reference 的需求会层层向上堆积：
+
+```text
+Controller 需要 reference trajectory
+  → 谁提供 reference？→ Planner
+
+Planner 需要自己的输入：
+  → 地图、目标点、障碍物、交通规则、语义信息...
+  → Planner 自己也可能需要 reference（如车道中心线、全局路径）
+
+Planner 的输入又依赖 Perception：
+  → 检测、跟踪、预测、语义分割...
+
+于是形成一个级联依赖链：
+  Perception → Planner → Controller
+  每一层都有自己的显式输入要求
+  每一层的误差都会向下游传播
+  系统复杂度是各层复杂度的乘积，不是加法
+```
+
+这就是传统自动驾驶"模块化堆叠"架构的根本困境——每个模块都对上游有强依赖，任何一层出错都会级联放大。
+
+RL（尤其是 end-to-end RL）的思路是跳过这个级联：
+
+```text
+传统：Perception → Planner → Controller（每层都有显式接口要求）
+E2E RL：raw input ──→ neural network ──→ action（一个网络端到端学）
+```
+
+代价是需要更多数据和训练，但避免了层层堆积的显式接口问题。
+
 **约束 2：自由度不能太高**
 
 ```text

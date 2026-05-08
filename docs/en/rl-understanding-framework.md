@@ -1370,6 +1370,37 @@ If constraints are nonlinear, non-convex, or reference is hard to define
 
 RL needs none of this: no explicit reference, no constraint form requirements, reward can be any computable scalar.
 
+Moreover, the reference requirement cascades upward layer by layer:
+
+```text
+Controller needs a reference trajectory
+  → Who provides the reference? → Planner
+
+Planner needs its own inputs:
+  → Maps, goal points, obstacles, traffic rules, semantic information...
+  → Planner itself may also need a reference (lane centerlines, global path)
+
+Planner's inputs depend on Perception:
+  → Detection, tracking, prediction, semantic segmentation...
+
+This forms a cascading dependency chain:
+  Perception → Planner → Controller
+  Each layer has its own explicit input requirements
+  Each layer's errors propagate downstream
+  System complexity is the PRODUCT of each layer's complexity, not the sum
+```
+
+This is the fundamental dilemma of traditional autonomous driving's "modular stack" architecture -- every module has strong dependencies on upstream modules, and errors at any layer cascade and amplify downstream.
+
+RL (especially end-to-end RL) aims to skip this cascade:
+
+```text
+Traditional: Perception → Planner → Controller (each layer has explicit interface requirements)
+E2E RL:      raw input ──→ neural network ──→ action (one network learns end-to-end)
+```
+
+The cost is more data and training, but it avoids the layer-upon-layer explicit interface problem.
+
 **Constraint 2: Degrees of freedom cannot be too high**
 
 ```text
