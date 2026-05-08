@@ -1,0 +1,196 @@
+\chapter{Action Modeling}
+\label{ch:action-modeling}
+
+Everything discussed so far---value compression, preference compression, bias
+management---ultimately feeds into one concrete question: \emph{how does the
+agent choose an action?}  The answer depends on whether the action space is
+discrete or continuous, and whether the policy is deterministic or stochastic.
+These choices are not cosmetic; they fundamentally shape the algorithm's
+architecture, exploration behavior, and failure modes.
+
+
+%% ================================================================
+\section{Discrete Actions: Enumerate, Then Argmax}
+\label{sec:discrete}
+
+When the action space is a finite set $\mathcal{A} = \{a_1, a_2, \ldots, a_k\}$,
+the Q-learning approach is natural.  A neural network takes the state as input
+and outputs one Q-value per action:
+\begin{equation}
+  s \;\longrightarrow\; \text{network} \;\longrightarrow\;
+  \bigl[Q(s,a_1),\; Q(s,a_2),\; \ldots,\; Q(s,a_k)\bigr].
+\end{equation}
+Decision-making is trivial: scan the $k$ outputs and pick the largest.
+\begin{equation}
+  a^{\ast} = \operatorname{argmax}_{a \in \mathcal{A}} Q(s,a).
+\end{equation}
+DQN is built on exactly this structure.  The convenience of discrete actions is
+that argmax is a free operation---$O(k)$ comparisons with no optimization
+required.  The limitation is equally clear: the approach does not scale when
+$k$ is very large or when actions are continuous.
+
+
+%% ================================================================
+\section{Continuous Actions: The Need for an Actor}
+\label{sec:continuous}
+
+In continuous control, actions are real-valued vectors $a \in \mathbb{R}^n$.
+Argmax becomes a continuous optimization problem:
+\begin{equation}
+  a^{\ast} = \operatorname{argmax}_{a \in \mathbb{R}^n} Q(s, a),
+\end{equation}
+which must be solved at every decision step---generally infeasible in real time.
+
+The solution is to introduce an \textbf{actor network} $\mu_\theta(s)$ that
+directly outputs an action, effectively serving as a learned, differentiable
+approximation to argmax:
+\begin{equation}
+  a = \mu_\theta(s), \qquad
+  \theta^{\ast} = \operatorname{argmax}_\theta\; Q(s,\, \mu_\theta(s)).
+\end{equation}
+The actor is trained by backpropagating through the critic's gradient
+$\nabla_a Q(s,a)\big|_{a=\mu_\theta(s)}$, pushing its output toward regions
+where $Q$ is high.
+
+\begin{keyidea}[The Actor as Differentiable Argmax]
+In continuous action spaces, the actor network replaces the intractable
+$\operatorname{argmax}_{a \in \mathbb{R}^n} Q(s,a)$ with a learned function
+$\mu_\theta(s)$ trained via gradient ascent on $Q$.  DDPG is the canonical
+realization of this idea.
+\end{keyidea}
+
+
+%% ================================================================
+\section{Policy Representations}
+\label{sec:policy-representations}
+
+When the algorithm optimizes a policy directly (as in policy gradient, PPO, or
+SAC), the policy must be represented as a parameterized distribution from which
+actions can be sampled and whose log-probability can be differentiated.
+
+\subsection{Discrete Policy: Categorical Distribution}
+
+For discrete actions, the standard representation is a categorical distribution
+produced by a softmax over network logits:
+\begin{equation}
+  s \;\longrightarrow\; \text{network} \;\longrightarrow\;
+  \ell_1, \ldots, \ell_k
+  \;\longrightarrow\;
+  \pi(a_i|s) = \frac{\exp(\ell_i)}{\sum_j \exp(\ell_j)}.
+\end{equation}
+Sampling draws an action from this categorical distribution.  The log-probability
+$\log \pi(a|s) = \ell_a - \log\sum_j \exp(\ell_j)$ is smooth and differentiable
+with respect to the network parameters.
+
+\subsection{Continuous Policy: Gaussian Distribution}
+
+For continuous actions, the most common choice is a diagonal Gaussian:
+\begin{equation}
+  \pi(a|s) = \mathcal{N}\!\bigl(a;\; \mu_\theta(s),\; \sigma_\theta(s)^2 I\bigr),
+\end{equation}
+where the network outputs both the mean $\mu_\theta(s)$ and the standard
+deviation $\sigma_\theta(s)$ (or log-std for numerical stability):
+\begin{equation}
+  s \;\longrightarrow\; \text{network} \;\longrightarrow\;
+  (\mu,\; \log\sigma)
+  \;\longrightarrow\;
+  a = \mu + \sigma \odot \epsilon,
+  \quad \epsilon \sim \mathcal{N}(0, I).
+\end{equation}
+The mean encodes the center of the agent's preference; the standard deviation
+encodes the exploration range.  This is the policy representation used by PPO
+and SAC in continuous-control tasks.
+
+
+%% ================================================================
+\section{Deterministic vs.\ Stochastic Policies}
+\label{sec:det-vs-stoch}
+
+\subsection{Deterministic: Hard Preference}
+
+A deterministic policy $a = \mu_\theta(s)$ outputs a single action per state.
+It represents a \emph{hard preference}---full commitment to one choice.
+
+\begin{itemize}[nosep]
+  \item \textbf{Strengths}: stable execution, simple inference, no sampling
+    variance.
+  \item \textbf{Weaknesses}: no intrinsic exploration.  The agent must rely on
+    external noise (e.g., Ornstein--Uhlenbeck in DDPG, Gaussian noise in TD3)
+    to visit new state--action pairs.
+  \item \textbf{Representatives}: DDPG, TD3.
+\end{itemize}
+
+\subsection{Stochastic: Soft Preference}
+
+A stochastic policy $a \sim \pi_\theta(a|s)$ outputs a distribution.  It
+represents a \emph{soft preference}---a graded ranking of actions rather than a
+single commitment.
+
+\begin{itemize}[nosep]
+  \item \textbf{Strengths}: built-in exploration, compatible with entropy
+    regularization, provides a natural log-probability for policy gradient.
+  \item \textbf{Weaknesses}: sampling introduces variance into both training
+    and execution.
+  \item \textbf{Representatives}: PPO, SAC, REINFORCE.
+\end{itemize}
+
+Table~\ref{tab:det-stoch} summarizes the comparison.
+
+\begin{table}[ht]
+\centering
+\caption{Deterministic vs.\ stochastic policies.}
+\label{tab:det-stoch}
+\begin{tabular}{@{}lll@{}}
+\toprule
+& \textbf{Deterministic} & \textbf{Stochastic} \\
+\midrule
+Output       & Single action $\mu(s)$ & Distribution $\pi(a|s)$ \\
+Preference   & Hard (point estimate)  & Soft (distribution) \\
+Exploration  & External noise required & Intrinsic \\
+Gradient signal & $\nabla_a Q$ through actor & $\nabla\log\pi \cdot A$ \\
+Typical algorithms & DDPG, TD3 & PPO, SAC, REINFORCE \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+%% ================================================================
+\section{Why RL Moved Toward Stochastic Policies}
+\label{sec:why-stochastic}
+
+In classical control, deterministic policies are the norm: given a state, output
+the optimal action.  Why did RL increasingly favor stochastic policies?
+
+The answer lies in RL's unique structure: the policy serves \textbf{two roles
+simultaneously}.
+
+\begin{enumerate}
+  \item \textbf{Decision-maker}: choosing what to do right now.
+  \item \textbf{Data sampler}: determining what the agent will observe in the
+    future.
+\end{enumerate}
+
+A deterministic policy is a competent decision-maker but a poor data sampler.
+It concentrates all future data around a single trajectory, starving the
+learning algorithm of the diversity it needs to improve.
+
+A stochastic policy balances both roles.  It makes good (on average) decisions
+\emph{and} maintains the data coverage needed for continued learning.
+
+\begin{keyidea}[The Dual Role of Policy]
+In RL, the policy is both the decision rule and the data-generation mechanism.
+A stochastic policy is a soft preference representation that naturally balances
+exploitation (good decisions) with exploration (diverse data).  This dual role
+is the fundamental reason RL moved from deterministic to stochastic policies.
+\end{keyidea}
+
+From the compression perspective of Chapter~\ref{ch:compression}, a stochastic
+policy is a richer, more complete compression of preferences.  Preferences are
+not always a single point; they can---and often should---be a distribution that
+reflects the agent's uncertainty about which action is truly best.
+\begin{align}
+  \text{Deterministic policy} &= \text{hard preference (point compression)}, \\
+  \text{Stochastic policy}    &= \text{soft preference (distributional compression)}.
+\end{align}
+The shift from deterministic to stochastic is, at its core, a shift from lossy
+point compression to richer distributional compression of behavioral preferences.

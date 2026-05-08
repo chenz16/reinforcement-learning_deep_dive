@@ -1,0 +1,372 @@
+\chapter{RL Meets the Real World}
+\label{ch:rl-real-world}
+
+Reinforcement learning does not exist in a vacuum.
+It can be trained from scratch, layered on top of supervised-learning base models, woven into diffusion and flow-matching generators, and shuttled between simulation and reality.
+This chapter maps the landscape of how RL connects to other paradigms---and where each connection matters most.
+
+%------------------------------------------------------------------
+\section{Pure RL from Scratch}
+\label{sec:pure-rl}
+
+The classic setting: no pretrained model, random initialisation, learning purely from environment interaction.
+
+\subsection{Value-Based Methods}
+
+The model learns a scalar estimate of long-term return for every state--action pair:
+\[
+  Q(s,a) \;\approx\; \mathbb{E}\!\Bigl[\sum_{k=0}^{\infty}\gamma^k r_{t+k} \;\Big|\; s_t=s,\;a_t=a\Bigr].
+\]
+Decisions follow $a = \arg\max_a Q(s,a)$.
+Representatives: Q-learning, DQN, Double DQN, Dueling DQN.
+
+Essence: \emph{learn valuations first, then extract behaviour from valuations}.
+
+\subsection{Policy-Based Methods}
+
+The model directly learns a preference distribution over actions:
+\[
+  \pi_\theta(a|s) \;\to\; \text{behavioural preference distribution}.
+\]
+Decisions follow $a \sim \pi_\theta(\cdot|s)$.
+Representatives: REINFORCE, PPO, SAC.
+
+Essence: \emph{directly learn the preference distribution}, skipping the intermediate value landscape.
+
+\subsection{Actor-Critic: Combining Both}
+
+Most modern algorithms are Actor-Critic:
+\begin{itemize}
+  \item \textbf{Critic}: learns value ($V$ or $Q$), provides a preference signal (advantage).
+  \item \textbf{Actor}: learns the behaviour distribution, guided by the Critic.
+\end{itemize}
+Representatives: A2C, DDPG, TD3, SAC, PPO (with a $V$-critic).
+
+%------------------------------------------------------------------
+\section{Architecture: Training vs.\ Inference Modules}
+\label{sec:architecture}
+
+A recurring pattern across all RL architectures: \emph{training requires more modules than inference}.
+
+\begin{keyidea}[Critic = Scaffolding]
+The Critic (or Value Head) exists only during training.
+It provides gradient signals---advantage estimates or $Q$-gradients---that guide the Actor's updates.
+At deployment, the Critic is discarded; only the Actor/Policy network is shipped to production.
+\end{keyidea}
+
+\begin{table}[htbp]
+\centering
+\caption{What is used at training vs.\ inference.}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Architecture} & \textbf{Training} & \textbf{Inference} & \textbf{Discarded} \\
+\midrule
+DQN & Backbone + Q Head + Target Net & Backbone + Q Head & Target Net \\
+PPO (shared) & Backbone + Policy Head + Value Head & Backbone + Policy Head & Value Head \\
+SAC / TD3 & Actor Net + Critic Net(s) & Actor Net & Entire Critic \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%------------------------------------------------------------------
+\section{Reward Sources: Prepared Before Training}
+\label{sec:reward-sources}
+
+The RL loop requires reward signals, but reward is \emph{not learned during RL training}---it must be prepared beforehand.
+
+\begin{enumerate}
+  \item \textbf{Environment-provided reward.}
+    Game scores, distance, collision penalties, energy consumption.
+    The environment directly returns a scalar; no extra preparation needed.
+
+  \item \textbf{Rule-based reward.}
+    Math-answer correctness, code compilation pass rate, format compliance.
+    A hand-written function $R(\text{output})\to\mathbb{R}$.
+    Common with GRPO.
+
+  \item \textbf{Learned Reward Model (RM).}
+    Collect human preference pairs (chosen, rejected), train an SL model
+    $\text{RM}(x,y)\to\mathbb{R}$ to approximate human preferences, then freeze it.
+    Standard approach for PPO-RLHF (InstructGPT).
+\end{enumerate}
+
+\begin{keyidea}[RM Is a Precondition --- Not Part of RL]
+The Reward Model is trained via supervised learning on preference data and frozen as a ``scorer'' during RL training.
+It is logically \emph{upstream} of RL, not inside it.
+\end{keyidea}
+
+%------------------------------------------------------------------
+\section{Value and Policy: Coupled in Sampling, Decoupled in Gradients}
+\label{sec:coupled-decoupled}
+
+In Actor-Critic training, the Critic and Actor appear in the same loop, but they are \textbf{two independent optimisation processes}:
+
+\[
+\begin{aligned}
+  \mathcal{L}_{\text{critic}} &= \bigl(V_\phi(s) - V_{\text{target}}\bigr)^2,
+  \qquad &\text{updates only } \phi; \\
+  \mathcal{L}_{\text{actor}}  &= -\log\pi_\theta(a|s)\cdot A(s,a),
+  \qquad &\text{updates only } \theta.
+\end{aligned}
+\]
+
+\textbf{Sampling level: coupled.}
+Policy determines what trajectories are collected; those trajectories are the data for both Critic and Actor.
+Change the policy, and the data distribution changes for everyone.
+
+\textbf{Gradient level: decoupled.}
+When computing $\nabla_\theta \mathcal{L}_{\text{actor}}$, the advantage $A(s,a)$ is treated as a \emph{constant}---a \texttt{stop\_gradient} wall separates the two.
+The Critic's parameters receive no gradient from the Actor's loss, and vice versa.
+
+\[
+  \nabla_\theta J = \mathbb{E}\!\bigl[\nabla_\theta \log\pi_\theta(a|s)\cdot \underbrace{A(s,a)}_{\text{detached}}\bigr]
+\]
+
+The one exception is DDPG/TD3's ``max-$Q$ loss'' $\mathcal{L}_{\text{actor}} = -Q(s,\mu_\theta(s))$, where the gradient flows \emph{through} $Q$ to the action and then to the actor---but $Q$'s own parameters are still frozen during the actor update.
+
+This alternating-iteration structure---Critic chases the policy's changing data, Actor chases the Critic's changing landscape---is the root cause of Actor-Critic instability.
+
+%------------------------------------------------------------------
+\section{RL Fine-Tuning of SL Base Models}
+\label{sec:rl-finetune}
+
+The dominant paradigm for LLM alignment: pretrain with SL, then fine-tune with RL.
+
+\[
+  \text{Pretraining (SL)} \;\to\; \text{SFT (SL)} \;\to\; \text{Preference Fine-Tuning (RL)}
+\]
+
+\subsection{PPO Approach (InstructGPT Route)}
+
+Requires \textbf{four models} in memory simultaneously:
+\begin{enumerate}
+  \item \textbf{Policy Model} --- the LLM being trained.
+  \item \textbf{Reference Model} --- frozen SFT copy, for KL constraint.
+  \item \textbf{Reward Model} --- trained from preferences, frozen as scorer.
+  \item \textbf{Critic / Value Head} --- estimates $V(s)$ for advantage computation; typically initialised from the RM.
+\end{enumerate}
+
+Training loop: Policy generates $\to$ RM scores $\to$ Critic estimates baseline $\to$ compute advantage $\to$ PPO clipped-ratio update $\to$ KL penalty keeps Policy near Reference.
+
+\subsection{GRPO Approach (DeepSeek Route)}
+
+Eliminates the Critic entirely.
+Requires only \textbf{two--three models}: Policy, Reference, and a reward source (RM or rule-based verifier).
+
+Core mechanism:
+\begin{enumerate}
+  \item For each prompt, Policy generates a \emph{group} of $G$ responses.
+  \item Each response is scored.
+  \item Within-group relative ranking serves as baseline (no Critic needed).
+  \item Policy gradient updates the Policy.
+\end{enumerate}
+
+DeepSeek-R1 uses full fine-tuning with GRPO, training all parameters.
+
+\subsection{DPO Approach (Stanford Route)}
+
+Eliminates even the Reward Model.
+Requires only \textbf{two models}: Policy and Reference.
+Trains directly on preference pairs $(\text{chosen}, \text{rejected})$ with a classification-style loss:
+\[
+  \mathcal{L}_{\text{DPO}} = -\log\sigma\!\Bigl(\beta\Bigl[
+    \log\frac{\pi_\theta(\text{chosen})}{\pi_{\text{ref}}(\text{chosen})}
+    - \log\frac{\pi_\theta(\text{rejected})}{\pi_{\text{ref}}(\text{rejected})}
+  \Bigr]\Bigr).
+\]
+
+\subsection{Comparison}
+
+\begin{table}[htbp]
+\centering
+\caption{LLM RL fine-tuning approaches.}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Approach} & \textbf{Models} & \textbf{Bellman eq.} & \textbf{Reward source} & \textbf{Complexity} \\
+\midrule
+PPO & 4 & Used (Critic) & RM & High \\
+GRPO & 2--3 & Not used & RM / rules & Medium \\
+DPO & 2 & Not used & Pref.\ pairs & Low \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Parameter-Efficient Updates: LoRA and QLoRA}
+
+Regardless of the RL method, one can choose \emph{how} to update the Policy:
+
+\begin{itemize}
+  \item \textbf{Full fine-tuning}: update all parameters. Maximum expressiveness; huge memory.
+  \item \textbf{LoRA}: freeze the base, train low-rank matrices $\Delta W = AB$. The Reference Model is free---a forward pass without the adapter \emph{is} the reference.
+  \item \textbf{QLoRA}: 4-bit quantised base + LoRA. Enables RLHF on consumer GPUs.
+\end{itemize}
+
+Typical choices: PPO with full fine-tuning (InstructGPT) or LoRA; GRPO with full fine-tuning (DeepSeek-R1); DPO + LoRA as the most memory-efficient alignment path.
+
+%------------------------------------------------------------------
+\section{RL with Diffusion and Flow Matching Models}
+\label{sec:diffusion-rl}
+
+When a diffusion or flow-matching model is used as a \emph{policy}, the multi-step denoising/flow process can be cast as an MDP and fine-tuned with RL.
+
+\subsection{Denoising Chain as MDP}
+
+\begin{keyidea}[DDPO: Denoising Diffusion Policy Optimisation]
+Model the denoising chain as an episodic MDP:
+\emph{state} = current noisy sample $x_t$;
+\emph{action} = one denoising step's output;
+\emph{episode} = complete chain $x_T \to x_0$;
+\emph{reward} = given only on the final $x_0$.
+Apply REINFORCE or PPO to estimate the policy gradient for each step without backpropagating through the entire chain.
+\end{keyidea}
+
+DDPO (Black et al., 2023) successfully fine-tuned text-to-image diffusion models with aesthetic scores and human preferences.
+
+\textbf{DPPO} (Ren et al., 2025) adapts PPO specifically for diffusion policies in continuous control, addressing cross-step clipping and high-dimensional action spaces.
+
+\textbf{DRaFT} (Clark et al., 2023) backpropagates reward gradients directly through a truncated denoising chain---more sample-efficient but requires a differentiable RM.
+
+\subsection{Flow Matching and RL}
+
+Flow Matching replaces stochastic SDEs with deterministic ODEs, enabling 5--10$\times$ faster inference.
+For RL, each discretised ODE step is treated as an action in the MDP, mirroring the DDPO formulation.
+
+\subsection{Key Challenges}
+
+\begin{table}[htbp]
+\centering
+\caption{Challenges in RL + diffusion/flow.}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Challenge} & \textbf{Common solution} \\
+\midrule
+Cross-step credit assignment & Episodic MDP formulation \\
+High REINFORCE variance & Fewer steps / baselines / truncated backprop \\
+Reward differentiability & Policy gradient bypasses this \\
+KL regularisation & Penalty similar to RLHF \\
+Action-chunk consistency & Overlapping window design \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%------------------------------------------------------------------
+\section{Agent RL vs.\ One-Round RL}
+\label{sec:agent-rl}
+
+\subsection{Traditional RL: Single-Round Sequential Interaction}
+
+A continuous time-series rollout:
+$s_0 \to a_0 \to r_0 \to s_1 \to a_1 \to r_1 \to \cdots \to s_T$.
+Each action directly produces the next state and reward.
+Typical scenarios: autonomous driving, robot control, Atari games.
+
+\subsection{Agentic RL: Multi-Round Conversational Interaction}
+
+An episode is a multi-round dialogue:
+\begin{enumerate}
+  \item Agent observes $\to$ thinks $\to$ calls tools / outputs text $\to$ environment feedback.
+  \item Agent observes feedback $\to$ thinks $\to$ acts again $\to$ feedback.
+  \item[$\vdots$]
+  \item Agent produces final output $\to$ episode ends.
+\end{enumerate}
+Typical scenarios: coding agents, dialogue systems, tool-using agents.
+
+\subsection{The Fundamental Connection}
+
+\begin{keyidea}[Autonomous Driving Is Agentic RL]
+In autonomous driving, each action chunk (a control sequence spanning $\sim$100\,ms--2\,s) is analogous to one ``round'' in an agentic AI system.
+After each chunk, the agent observes the new environment state and decides again.
+Both are closed-loop MDPs; the differences are only in action granularity, environment nature, and interaction frequency.
+\end{keyidea}
+
+\begin{table}[htbp]
+\centering
+\caption{Traditional RL vs.\ Agentic RL.}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Dimension} & \textbf{Autonomous Driving} & \textbf{Agentic AI} \\
+\midrule
+One ``round'' & Action chunk (100\,ms--2\,s) & Agent output (tool call / text) \\
+Env.\ feedback & New sensor observations & Tool results / user replies \\
+Episode & One drive (min--hrs) & One task (code fix / Q\&A) \\
+State space & Continuous, high-dim & Discrete, variable-length \\
+Action space & Continuous & Discrete / mixed \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Training Differences}
+
+\textbf{Traditional RL} (driving / robotics): continuous-action policies (Gaussian / Diffusion / Flow), Actor-Critic (SAC / TD3 / PPO), high-frequency simulator interaction, engineered rewards.
+
+\textbf{Agentic RL} (LLM agents): autoregressive token policy, PPO / GRPO / DPO, multi-round agent--environment interaction, task-completion / preference / verifier rewards, far higher compute per ``action.''
+
+%------------------------------------------------------------------
+\section{Sim2Real / Real2Sim Loop}
+\label{sec:sim2real}
+
+RL needs massive interaction, but real-world interaction is expensive, dangerous, and slow.
+The Sim2Real and Real2Sim loop addresses this.
+
+\subsection{Sim2Real: From Simulation to Reality}
+
+The core challenge is the \textbf{reality gap}---a policy trained in simulation often fails in the real world because physics, rendering, and dynamics differ.
+
+\textbf{Domain Randomisation.}
+Randomise simulator parameters (friction, mass, lighting, textures, sensor noise) during training so the real world is ``just another draw'' from the training distribution.
+OpenAI's Automatic Domain Randomisation (ADR, 2019) trained a robotic hand to solve a Rubik's cube by dynamically expanding randomisation across thousands of parameters.
+
+\textbf{System Identification.}
+Measure real-world physics parameters, calibrate the simulator, and optionally randomise \emph{around} calibrated values rather than uniformly.
+
+\textbf{Domain Adaptation.}
+Use CycleGAN or adversarial training to align visual distributions between sim and real without paired data.
+
+\textbf{Progressive Transfer.}
+Train in simulation first, then fine-tune in the real environment with a small amount of real data.
+
+\subsection{Real2Sim: From Reality to Simulation}
+
+The reverse direction: use real-world data to build or improve simulators.
+
+\begin{itemize}
+  \item \textbf{Neural Scene Reconstruction}: NeRF / 3D Gaussian Splatting reconstruct photo-realistic, editable scenes from real sensor data.
+  \item \textbf{Learned World Models}: generative models trained on real data serve as implicit simulators (GAIA-1, DayDreamer).
+  \item \textbf{Digital Twins}: high-fidelity digital replicas continuously updated with sensor data.
+  \item \textbf{Sim Parameter Calibration}: optimise simulator parameters (friction, drag, latency) using real trajectory data via Bayesian optimisation or differentiable simulation.
+\end{itemize}
+
+\subsection{The Continuous Loop}
+
+In autonomous driving, the loop runs continuously:
+\[
+  \text{Real data} \xrightarrow{\text{Real2Sim}} \text{Better sim}
+  \xrightarrow{\text{Train}} \text{Better policy}
+  \xrightarrow{\text{Sim2Real}} \text{Deploy}
+  \xrightarrow{\text{Collect}} \text{New real data}
+  \to \cdots
+\]
+Each iteration reduces the reality gap and improves real-world performance.
+
+%------------------------------------------------------------------
+\section{Summary}
+
+\begin{table}[htbp]
+\centering
+\caption{RL's role across different scenarios.}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Scenario} & \textbf{RL's role} & \textbf{Key methods} \\
+\midrule
+From scratch & Full policy learning & DQN, PPO, SAC \\
+LLM alignment & Preference fine-tuning & PPO+RM, GRPO, DPO (+LoRA) \\
+Diffusion / Flow & Denoising-chain MDP & DDPO, DPPO, DRaFT \\
+Agent RL & Multi-round closed-loop & PPO, GRPO for LLM agents \\
+Sim $\leftrightarrow$ Real & Transfer loop & Domain rand., world models \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The common thread: RL is \emph{preference optimisation under biased sampling}.
+Whether the policy is a Q-network, an LLM, or a diffusion model, the same closed-loop challenge applies---the algorithm changes its own data distribution.
+Every technique in this chapter is a different strategy for managing that fundamental difficulty in a different application context.

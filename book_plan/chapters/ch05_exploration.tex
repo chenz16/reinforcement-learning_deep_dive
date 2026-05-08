@@ -1,0 +1,171 @@
+\chapter{Exploration, Exploitation, and Entropy}
+\label{ch:exploration}
+
+Every RL agent faces a dilemma: exploit what it currently believes is best, or explore to improve its beliefs. This chapter examines how the dilemma arises from the interaction between noisy value estimates and greedy action selection, and traces the progression from crude fixes ($\varepsilon$-greedy) to principled solutions (maximum entropy RL).
+
+%% ----------------------------------------------------------------
+\section{Greedy Converts Noise into Bias}
+\label{sec:greedy-problem}
+
+Consider a naive agent that always selects $a = \arg\max_a Q(s,a)$. In early training, $Q$ is poorly estimated---essentially noisy. But $\arg\max$ does not know that. It selects whichever action's estimate happens to be highest, regardless of whether that estimate is accurate.
+
+The resulting feedback loop is destructive:
+
+\begin{equation*}
+  \underset{\text{1. early $Q$ noisy}}{\boxed{\phantom{x}}}
+  \;\to\;
+  \underset{\text{2. argmax picks overestimated action}}{\boxed{\phantom{x}}}
+  \;\to\;
+  \underset{\text{3. policy biases toward it}}{\boxed{\phantom{x}}}
+  \;\to\;
+  \underset{\text{4. other actions unsampled}}{\boxed{\phantom{x}}}
+  \;\to\;
+  \underset{\text{5. data narrows}}{\boxed{\phantom{x}}}
+  \;\to\;
+  \underset{\text{6. $Q$ harder to correct}}{\boxed{\phantom{x}}}
+\end{equation*}
+
+\begin{keyidea}[The Core Problem with Greedy]
+The problem with greedy action selection is not simply ``too greedy.'' It is that greedy selection converts estimation noise directly into sampling bias. Once the data distribution narrows, the noisy estimates that caused the problem become self-reinforcing.
+\end{keyidea}
+
+From a statistical perspective: without sampling, there is no estimation; without coverage, there is no generalization guarantee.
+
+%% ----------------------------------------------------------------
+\section{$\varepsilon$-Greedy: A Hard Rule}
+\label{sec:epsilon-greedy}
+
+DQN's standard exploration mechanism is $\varepsilon$-greedy:
+\begin{equation}
+  a =
+  \begin{cases}
+    \arg\max_a Q(s,a) & \text{with probability } 1 - \varepsilon, \\
+    \text{Uniform}(\mathcal{A}) & \text{with probability } \varepsilon.
+  \end{cases}
+  \label{eq:eps-greedy}
+\end{equation}
+
+This is a binary switch: either full exploitation or fully random exploration, with no gradation. It is crude but effective at preventing the feedback loop of Section~\ref{sec:greedy-problem}. The random actions inject data diversity that keeps Q-estimates from becoming self-fulfilling prophecies.
+
+Typical practice decays $\varepsilon$ over training---exploring widely at the start, then narrowing as Q-estimates improve. The schedule is a hyperparameter, and getting it wrong (decaying too fast or too slowly) directly impacts performance.
+
+\subsection{Limitations}
+
+\begin{itemize}
+  \item The random actions are \emph{uniformly} random, with no preference for informative actions.
+  \item The binary switch creates a sharp boundary between exploitation and exploration modes.
+  \item In high-dimensional action spaces, uniform random actions are almost certainly useless.
+\end{itemize}
+
+%% ----------------------------------------------------------------
+\section{Entropy: A Soft Constraint on Policy Sharpness}
+\label{sec:entropy-exploration}
+
+Entropy provides a continuous, differentiable alternative to the hard switch of $\varepsilon$-greedy. For a stochastic policy $\pi_\theta(a \mid s)$, the entropy is:
+\begin{equation}
+  \mathcal{H}\bigl[\pi_\theta(\cdot \mid s)\bigr]
+  = -\sum_a \pi_\theta(a \mid s)\,\log\pi_\theta(a \mid s)
+  \qquad\text{(discrete)},
+\end{equation}
+or the differential entropy analogue for continuous actions.
+
+When entropy is high, the policy spreads probability across many actions. When entropy is low, the policy is sharp and nearly deterministic. Adding an entropy bonus to the loss encourages the policy to maintain breadth:
+\begin{equation}
+  \mathcal{L} = -\hat{A}(s,a)\,\log\pi_\theta(a \mid s) - \beta\,\mathcal{H}\bigl[\pi_\theta(\cdot \mid s)\bigr],
+\end{equation}
+where $\beta > 0$ controls the strength of the regularization.
+
+\begin{keyidea}[Entropy vs.\ $\varepsilon$-Greedy]
+$\varepsilon$-greedy is a hard, external rule: either greedy or random. Entropy is a soft, internal constraint: the policy itself learns how much randomness to maintain. Entropy smoothly modulates the exploration--exploitation balance rather than switching between two extremes.
+\end{keyidea}
+
+\subsection{Why Not Just ``Encourage Randomness''?}
+
+The entropy bonus is sometimes described as ``encouraging exploration,'' which is true but imprecise. Its deeper role is \emph{distributional regularization}: preventing the policy from collapsing to a near-deterministic distribution before the value estimates have converged. Without it, the advantage-weighted gradient pushes probability mass toward a few actions, narrowing the sampling distribution and degrading future estimates.
+
+%% ----------------------------------------------------------------
+\section{SAC: Exploration as Part of the Objective}
+\label{sec:sac-exploration}
+
+Soft Actor-Critic (SAC) makes entropy a first-class citizen of the optimization objective rather than an auxiliary regularizer:
+\begin{equation}
+  J_{\text{SAC}}(\theta) = \sum_t \mathbb{E}\!\bigl[
+    r(s_t, a_t) + \alpha\,\mathcal{H}\bigl[\pi_\theta(\cdot \mid s_t)\bigr]
+  \bigr],
+  \label{eq:sac-objective}
+\end{equation}
+where $\alpha$ is a temperature parameter that balances reward against entropy.
+
+This reframes the problem: the agent is not maximizing reward and then adding exploration as an afterthought. It is maximizing \emph{entropy-augmented reward}. Sampling diversity is something the agent is explicitly rewarded for.
+
+\subsection{Automatic Temperature Tuning}
+
+SAC can automatically adjust $\alpha$ by treating it as a Lagrange multiplier for a minimum-entropy constraint:
+\begin{equation}
+  \alpha^* = \arg\min_\alpha\; \mathbb{E}\!\bigl[
+    -\alpha\,\log\pi_\theta(a \mid s) - \alpha\,\bar{\mathcal{H}}
+  \bigr],
+\end{equation}
+where $\bar{\mathcal{H}}$ is a target entropy (typically set to $-\dim(\mathcal{A})$ for continuous actions). When the policy's entropy drops below the target, $\alpha$ increases to push it back up. When entropy is already high, $\alpha$ decreases to allow more exploitation.
+
+\subsection{Consequences for the Q-Function}
+
+SAC's critic learns a \emph{soft} Q-function that accounts for future entropy:
+\begin{equation}
+  Q^{\text{soft}}(s,a) = r + \gamma\,\mathbb{E}_{s'}\!\bigl[
+    V^{\text{soft}}(s')
+  \bigr],
+  \qquad
+  V^{\text{soft}}(s) = \mathbb{E}_{a \sim \pi}\!\bigl[
+    Q^{\text{soft}}(s,a) - \alpha\log\pi(a \mid s)
+  \bigr].
+\end{equation}
+The soft value includes the entropy bonus, so the critic naturally accounts for the exploration benefit of stochastic actions. This is more principled than bolting entropy onto a standard Q-learner.
+
+%% ----------------------------------------------------------------
+\section{The Balance: Preference Shaping vs.\ Uniform Pull}
+\label{sec:balance}
+
+Every stochastic policy in RL lives under the tension of two forces:
+
+\begin{center}
+\begin{tabular}{@{} l p{8cm} @{}}
+\toprule
+\textbf{Force} & \textbf{Effect on the policy distribution} \\
+\midrule
+Preference shaping & Push probability toward actions with high estimated advantage. This is the reward-driven signal: actions that worked well should become more likely. \\
+Entropy / uniform pull & Pull the distribution back toward uniformity. This prevents premature commitment and ensures continued data coverage. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The final learned policy is the equilibrium between these two forces:
+\begin{equation}
+  \pi^*(a \mid s) \;\propto\; \exp\!\Bigl(\frac{1}{\alpha}\,Q^{\text{soft}}(s, a)\Bigr).
+  \label{eq:boltzmann}
+\end{equation}
+
+This is a Boltzmann (softmax) distribution over actions, parameterized by the soft Q-values. At high temperature ($\alpha$ large), the distribution is nearly uniform---maximum exploration. At low temperature ($\alpha$ small), the distribution concentrates on the highest-Q action---maximum exploitation. The optimal $\alpha$ balances the two.
+
+\begin{keyidea}[The Exploration--Exploitation Equilibrium]
+The final policy is neither pure exploitation (a delta function on the best action) nor pure exploration (a uniform distribution). It is a temperature-controlled Boltzmann distribution where the temperature $\alpha$ mediates between preference shaping and distributional breadth. SAC automates the choice of $\alpha$; simpler methods like $\varepsilon$-greedy approximate it with a manual schedule.
+\end{keyidea}
+
+%% ----------------------------------------------------------------
+\section{Summary: The Exploration Progression}
+\label{sec:exploration-summary}
+
+\begin{center}
+\begin{tabular}{@{} l l l @{}}
+\toprule
+\textbf{Method} & \textbf{Mechanism} & \textbf{Character} \\
+\midrule
+Greedy & $\arg\max Q$ & No exploration; noise $\to$ bias \\
+$\varepsilon$-greedy & Random with probability $\varepsilon$ & Hard switch; crude but functional \\
+Entropy bonus & $+\beta\,\mathcal{H}[\pi]$ in loss & Soft regularizer on policy sharpness \\
+SAC (max-entropy) & $\max\; r + \alpha\,\mathcal{H}[\pi]$ & Exploration as part of objective \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The progression is from external, ad-hoc fixes to internal, principled objectives. At each step, the agent gains a more nuanced mechanism for balancing what it knows (exploit) against what it does not yet know (explore). The endpoint---maximum entropy RL---treats exploration not as a cost to be minimized but as a property to be optimized alongside reward.

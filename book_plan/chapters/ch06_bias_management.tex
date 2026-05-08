@@ -1,0 +1,326 @@
+\chapter{Bias Management --- RL's Real Game}
+\label{ch:bias-management}
+
+Newcomers to RL often assume the goal is to find an unbiased estimator of the
+optimal policy.  This is a misunderstanding.  Every component of the RL
+pipeline---sampling, estimation, target construction---introduces bias.  The
+real engineering question is not ``how do I eliminate bias?'' but rather
+\emph{which biases am I willing to accept, and how do I keep them under
+control?}
+
+\begin{keyidea}[The Bias Management Principle]
+RL does not pursue unbiased optimization.  It selects, among a landscape of
+unavoidable biases, the bias structure that is most stable and controllable in
+practice.
+\end{keyidea}
+
+
+%% ================================================================
+\section{Seven Sources of Bias}
+\label{sec:seven-biases}
+
+Almost every design choice in RL introduces a distinct form of bias.
+Table~\ref{tab:bias-sources} catalogs the seven most important ones.
+
+\begin{table}[ht]
+\centering
+\caption{Seven sources of bias in reinforcement learning.}
+\label{tab:bias-sources}
+\begin{tabular}{@{}lp{8.5cm}@{}}
+\toprule
+\textbf{Bias source} & \textbf{Mechanism} \\
+\midrule
+Sampling bias &
+  The agent only visits states and actions that its current (or past) policy
+  selects.  Regions of the state--action space that are never sampled can never
+  be evaluated. \\
+Bootstrapping bias &
+  TD targets use the model's own estimates as labels:
+  $y = r + \gamma \hat{Q}(s',a')$.  Errors in $\hat{Q}$ feed back into the
+  next round of fitting. \\
+Max / argmax bias &
+  $\mathbb{E}[\max_a \hat{Q}(s,a)] \geq \max_a \mathbb{E}[\hat{Q}(s,a)]$.
+  Taking the max over noisy estimates systematically overestimates value. \\
+Function approximation bias &
+  Neural networks generalize---and therefore \emph{mis}-generalize.  A network
+  that fits well in visited regions may produce arbitrary values elsewhere. \\
+Replay distribution bias &
+  Off-policy methods reuse transitions sampled by old policies.  The
+  distribution in the buffer drifts away from the current policy's visitation
+  distribution. \\
+Reward design bias &
+  Shaped rewards, sparse rewards, and proxy rewards all inject the designer's
+  assumptions.  The agent optimizes the reward it is given, not the reward the
+  designer intended. \\
+Policy-induced data bias &
+  The policy generates its own training data.  A prematurely peaked policy
+  narrows the data distribution, making it harder for the estimator to
+  self-correct. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These biases are not independent---they interact.  Bootstrapping amplifies
+function-approximation error; max bias turns that amplified error into
+overestimation; overestimation warps the policy, which in turn narrows sampling.
+Understanding these feedback loops is the key to understanding why RL algorithms
+look the way they do.
+
+
+%% ================================================================
+\section{Q-Learning's Bias: Max Overestimation}
+\label{sec:q-bias}
+
+Q-learning constructs its target as
+\begin{equation}
+  y = r + \gamma \max_{a'} Q_{\text{target}}(s', a').
+\end{equation}
+If each $\hat{Q}(s',a')$ has zero-mean noise $\epsilon_{a'}$, then
+\begin{equation}
+  \mathbb{E}\!\bigl[\max_{a'} \hat{Q}(s',a')\bigr]
+  \;>\; \max_{a'}\mathbb{E}\!\bigl[\hat{Q}(s',a')\bigr],
+\end{equation}
+because the max operator preferentially selects actions whose noise happens to
+be positive.  This is Jensen's inequality applied to the convex $\max$
+function.
+
+Over many bootstrapping steps, the overestimation compounds.  The agent begins
+to ``believe'' that certain state--action pairs are far more valuable than they
+actually are, and the policy chases these phantoms.
+
+\subsection{Correction 1: Double Q-Learning}
+
+Double DQN decouples action selection from value evaluation:
+\begin{equation}
+  a^{\ast} = \operatorname{argmax}_{a'} Q_{\text{online}}(s', a'),
+  \qquad
+  y = r + \gamma\, Q_{\text{target}}(s', a^{\ast}).
+\end{equation}
+The online network picks the action; the target network evaluates it.  Because
+two different networks are unlikely to share the same noise pattern,
+overestimation is reduced (though not eliminated).
+
+\subsection{Correction 2: Target Network}
+
+A target network $Q_{\text{target}}$ is a slow-moving copy of $Q_{\text{online}}$.
+By not chasing every gradient step, it stabilizes the bootstrapping target and
+dampens the positive-feedback loop between overestimation and policy shift.
+
+\subsection{Correction 3: Clipped Double Q / Conservative Q}
+
+TD3 maintains two critics and takes the minimum:
+\begin{equation}
+  y = r + \gamma\, \min\!\bigl(Q_1(s', \mu_{\text{target}}(s')),\;
+  Q_2(s', \mu_{\text{target}}(s'))\bigr).
+\end{equation}
+This deliberately introduces a \emph{pessimistic} bias to counteract the
+optimistic bias of $\max$.  The trade-off is slower value propagation, but
+the critic surface the actor exploits is far more trustworthy.
+
+Conservative Q-Learning (CQL) pushes the idea further in the offline setting by
+adding a penalty that explicitly lowers $Q$ values for out-of-distribution
+actions, ensuring the policy does not exploit regions where the critic has no
+data support.
+
+\begin{keyidea}[The Q-Learning Bias Correction Arc]
+$\max$ overestimation $\;\longrightarrow\;$
+Double Q (decouple selection/evaluation) $\;\longrightarrow\;$
+Target net (slow the bootstrap) $\;\longrightarrow\;$
+Clipped double Q (pessimistic bias) $\;\longrightarrow\;$
+Conservative Q (penalize unsupported actions).
+Each step trades a different form of controlled bias for a reduction in
+uncontrolled overestimation.
+\end{keyidea}
+
+
+%% ================================================================
+\section{Policy Gradient's Bias: Variance That Masquerades as Bias}
+\label{sec:pg-bias}
+
+Policy gradient methods avoid the $\max$ operator entirely.  The gradient
+\begin{equation}
+  \nabla J(\theta) = \mathbb{E}_{s,a \sim \pi_\theta}
+  \bigl[\nabla \log \pi_\theta(a|s)\; A^{\pi}(s,a)\bigr]
+\end{equation}
+is, in principle, \emph{unbiased}---provided the advantage $A^{\pi}$ is computed
+exactly and the actions are sampled from the current policy.
+
+In practice, neither condition holds.  The advantage is estimated from a finite
+number of noisy rollouts, and Monte Carlo returns have high variance.  High
+variance means that the gradient signal is dominated by noise, and training
+becomes unstable or painfully slow.
+
+\subsection{Baseline: Centering the Advantage}
+
+Subtracting a baseline $b(s)$ from the return does not change the expected
+gradient (the $\nabla\log\pi$ term integrates to zero under the policy
+distribution), but it dramatically reduces variance:
+\begin{equation}
+  \nabla J(\theta) = \mathbb{E}\bigl[\nabla \log \pi_\theta(a|s)\;
+  \bigl(A(s,a) - b(s)\bigr)\bigr].
+\end{equation}
+The value function $V(s)$ is the most common baseline, yielding the advantage
+$A(s,a) = Q(s,a) - V(s)$.
+
+\subsection{GAE: Bias--Variance Trade-off in Advantage Estimation}
+
+Generalized Advantage Estimation (GAE) interpolates between low-bias,
+high-variance Monte Carlo returns and high-bias, low-variance one-step TD
+errors via the parameter $\lambda$:
+\begin{equation}
+  \hat{A}_t^{\text{GAE}(\gamma,\lambda)}
+  = \sum_{l=0}^{\infty} (\gamma\lambda)^l\, \delta_{t+l},
+  \qquad
+  \delta_t = r_t + \gamma V(s_{t+1}) - V(s_t).
+\end{equation}
+When $\lambda = 1$, GAE reduces to the full Monte Carlo advantage (unbiased,
+high variance).  When $\lambda = 0$, it reduces to the one-step TD advantage
+(biased, low variance).  Practitioners typically choose $\lambda \in [0.9, 0.99]$,
+accepting a small amount of bias in exchange for much lower variance.
+
+\subsection{PPO Clipping: Trading Bias for Stability}
+
+PPO uses the importance-sampled objective
+\begin{equation}
+  L^{\text{CLIP}}(\theta) = \hat{\mathbb{E}}\!\left[\min\!\left(
+    r_t(\theta)\,\hat{A}_t,\;
+    \operatorname{clip}\!\bigl(r_t(\theta),\, 1{-}\epsilon,\, 1{+}\epsilon\bigr)\,
+    \hat{A}_t
+  \right)\right],
+\end{equation}
+where $r_t(\theta) = \pi_\theta(a_t|s_t)\,/\,\pi_{\text{old}}(a_t|s_t)$.
+
+The clipping deliberately prevents the ratio from moving too far from 1.  This
+means the gradient is no longer the true policy gradient---it is biased.  But
+the bias is bounded and predictable, whereas the unclipped gradient can produce
+catastrophic policy updates when the importance ratio explodes.
+
+\begin{keyidea}[PPO's Bargain]
+PPO intentionally introduces gradient bias through clipping.  The payoff is
+engineering stability: updates that are ``close enough'' to the true gradient but
+never catastrophically wrong.  This is perhaps the clearest example in RL of
+\emph{choosing a more controllable bias structure}.
+\end{keyidea}
+
+
+%% ================================================================
+\section{SAC's Bias: Entropy as Intentional Objective Rewriting}
+\label{sec:sac-bias}
+
+Soft Actor-Critic optimizes a modified objective:
+\begin{equation}
+  J_{\text{SAC}}(\pi) = \sum_t \mathbb{E}\!\bigl[
+    r(s_t, a_t) + \alpha\,\mathcal{H}\!\bigl(\pi(\cdot|s_t)\bigr)
+  \bigr],
+\end{equation}
+where $\alpha$ is a temperature parameter and $\mathcal{H}$ is the entropy of
+the policy.
+
+This is \emph{not} the original reward-maximization objective.  SAC admits an
+intentional bias: the optimal SAC policy is not the same as the optimal
+reward-maximizing policy.  It is the optimal \emph{entropy-regularized} policy.
+
+Why accept this bias?  Three reasons:
+\begin{enumerate}[nosep]
+  \item \textbf{Stable exploration.}  The entropy term prevents the policy from
+    collapsing onto a single action.  This keeps the sampling distribution broad
+    and the critic's training data diverse.
+  \item \textbf{Smoother Q landscape.}  When the policy stays stochastic, the
+    Bellman target integrates over actions rather than hinging on a single
+    $\max$.  This suppresses the spike-chasing behavior that plagues
+    deterministic actor-critics.
+  \item \textbf{Robustness.}  A stochastic policy is inherently more robust to
+    perturbations---it hedges rather than committing to a single action.
+\end{enumerate}
+
+SAC's bias structure can be summarized as:
+
+\begin{keyidea}[SAC's Entropy Bias]
+SAC trades a soft objective (entropy-regularized reward) for stable exploration
+and better data coverage.  The bias is explicit, tunable via $\alpha$, and
+produces policies that are both effective and robust.
+\end{keyidea}
+
+
+%% ================================================================
+\section{Choosing a Controllable Bias Structure}
+\label{sec:choosing-bias}
+
+Table~\ref{tab:bias-strategies} summarizes how major algorithm families handle
+the bias problem.
+
+\begin{table}[ht]
+\centering
+\caption{Bias strategies across algorithm families.}
+\label{tab:bias-strategies}
+\begin{tabular}{@{}lp{4cm}p{4.5cm}@{}}
+\toprule
+\textbf{Algorithm family} & \textbf{Dominant bias} & \textbf{Mitigation strategy} \\
+\midrule
+Q-learning / DQN &
+  Max overestimation, bootstrap &
+  Double Q, target net, conservative Q \\
+DDPG / TD3 &
+  Actor exploits critic errors &
+  Clipped double critic, delayed update, target smoothing \\
+REINFORCE / A2C &
+  High variance (effective bias in finite samples) &
+  Baseline, GAE, advantage normalization \\
+PPO &
+  Clipping introduces gradient bias &
+  Bounded, predictable bias traded for stability \\
+SAC &
+  Entropy rewrites the objective &
+  Intentional bias for exploration; tunable via $\alpha$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The pattern is clear.  No algorithm eliminates bias.  Each algorithm
+\emph{chooses} which biases to accept based on what is controllable in its
+particular setting:
+
+\begin{itemize}[nosep]
+  \item Value-based methods accept bootstrapping and approximation bias, then
+    spend engineering effort suppressing max overestimation.
+  \item Policy gradient methods are unbiased in theory but high-variance in
+    practice; they introduce controlled bias (baselines, clipping, GAE's
+    $\lambda$) to tame variance.
+  \item SAC openly rewrites the objective, accepting an entropy bias that is
+    explicit and tunable.
+\end{itemize}
+
+\begin{keyidea}[The Meta-Lesson]
+The history of RL algorithm design is not a march toward unbiased estimation.
+It is a search for \textbf{better bias structures}---ones whose distortions are
+predictable, bounded, and tunable, even if the resulting objective is no longer
+the ``pure'' reward-maximization problem.
+\end{keyidea}
+
+
+%% ================================================================
+\section{Why This Matters in Practice}
+\label{sec:bias-practice}
+
+When debugging an RL system, the first question should not be ``is my
+implementation correct?'' but rather ``which bias is dominating, and is it the
+one I designed for?''
+
+A few practical heuristics:
+
+\begin{enumerate}[nosep]
+  \item \textbf{If Q values diverge upward}: max overestimation is likely
+    compounding.  Switch to Double Q or clipped double critics.
+  \item \textbf{If the policy collapses to a single action}: sampling bias has
+    taken over.  Increase entropy regularization or exploration noise.
+  \item \textbf{If training is stable but performance plateaus}: the bias
+    structure may be too conservative.  Try reducing PPO's clip range, lowering
+    SAC's $\alpha$, or using less aggressive target-network lag.
+  \item \textbf{If off-policy training is unstable}: replay distribution bias
+    may be severe.  Consider prioritized replay, shorter buffer horizons, or
+    switching to a near-on-policy method.
+\end{enumerate}
+
+Understanding bias is not an academic exercise---it is the most practical skill
+in RL engineering.  Every hyperparameter in a modern RL algorithm is, at its
+core, a knob that adjusts the bias--variance--stability trade-off.

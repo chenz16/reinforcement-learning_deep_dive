@@ -1,0 +1,200 @@
+\documentclass[11pt,a4paper,openany]{book}
+
+% ============================================================
+% Packages
+% ============================================================
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{tcolorbox}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{setspace}
+\usepackage{microtype}
+
+% ============================================================
+% Colors & Styles
+% ============================================================
+\hypersetup{
+    colorlinks=true,
+    linkcolor=MidnightBlue,
+    citecolor=OliveGreen,
+    urlcolor=BrickRed
+}
+
+\definecolor{codegreen}{rgb}{0.25,0.49,0.31}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.97,0.97,0.97}
+
+\lstdefinestyle{pythonstyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{codepurple}\bfseries,
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{BrickRed},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    numbers=left,
+    numbersep=5pt,
+    frame=single,
+    framesep=5pt,
+    xleftmargin=15pt,
+    language=Python,
+    showstringspaces=false
+}
+\lstset{style=pythonstyle}
+
+% ============================================================
+% Theorem-like environments
+% ============================================================
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{insight}[definition]{Key Insight}
+
+\theoremstyle{remark}
+\newtheorem*{takeaway}{Takeaway}
+
+% ============================================================
+% Colored boxes
+% ============================================================
+\newtcolorbox{keyidea}[1][]{
+    colback=blue!5!white,
+    colframe=MidnightBlue,
+    title=#1,
+    fonttitle=\bfseries,
+    sharp corners,
+    boxrule=0.5pt
+}
+
+\newtcolorbox{warning}[1][]{
+    colback=red!5!white,
+    colframe=BrickRed,
+    title=#1,
+    fonttitle=\bfseries,
+    sharp corners,
+    boxrule=0.5pt
+}
+
+% ============================================================
+% Headers
+% ============================================================
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\leftmark}
+\fancyhead[RO]{\rightmark}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ============================================================
+% Title
+% ============================================================
+\title{
+    \vspace{-2cm}
+    {\Huge\bfseries Truly Master\\Reinforcement Learning}\\[1em]
+    {\Large\itshape From Bellman Equations to Preference Learning:\\
+    A Conceptual Deep Dive}\\[2em]
+    {\large Chen Z.}
+}
+\date{\today}
+\author{}
+
+% ============================================================
+% Document
+% ============================================================
+\begin{document}
+
+\frontmatter
+\maketitle
+
+% ------ Preface ------
+\chapter*{Preface}
+\addcontentsline{toc}{chapter}{Preface}
+
+You have read Sutton \& Barto. You know what Q-learning is. You can recite the Bellman equation. You have maybe even implemented PPO.
+
+But something still feels off. Why did RL move from value functions to policy gradients? What exactly is the relationship between DQN, PPO, SAC, and RLHF? Why do modern methods look so \emph{ad-hoc} compared to the elegant Bellman theory?
+
+This book answers those questions. It is not another algorithm-by-algorithm tutorial. It is a \textbf{conceptual deep dive} that traces one unified story: how reinforcement learning evolved from classical dynamic programming to modern preference learning, and why every algorithm along the way is a natural consequence of that evolution.
+
+We approach RL from two complementary angles:
+
+\begin{itemize}
+    \item \textbf{The macro view}: a single narrative arc from Bellman (1957) to GRPO (2025), showing how the Bellman equation went from ``the entire optimization'' to ``completely absent.''
+    \item \textbf{The micro view}: a multi-dimensional dissection of \emph{why} each technique exists---loss design, sampling structure, bias management, compression, and action modeling.
+\end{itemize}
+
+The goal is not completeness---it is compression. We aim for the shortest path from ``I know what Q-learning is'' to ``I understand why the entire field evolved the way it did.''
+
+\vspace{1em}
+\noindent\textit{This book is for students who passed the RL course but can't connect the dots, engineers who want deeper intuition, and anyone preparing for interviews who is tired of surface-level algorithm summaries.}
+
+\tableofcontents
+
+% ============================================================
+\mainmatter
+% ============================================================
+
+\part{The Big Picture}
+\input{chapters/ch01_rl_is_not_what_you_think}
+\input{chapters/ch02_grand_arc}
+
+\part{The Mechanisms}
+\input{chapters/ch03_loss_landscape}
+\input{chapters/ch04_on_off_policy}
+\input{chapters/ch05_exploration}
+\input{chapters/ch06_bias_management}
+\input{chapters/ch07_compression}
+\input{chapters/ch08_action_modeling}
+
+\part{Beyond Classical RL}
+\input{chapters/ch09_optimal_control_vs_rl}
+\input{chapters/ch10_rl_meets_real_world}
+
+\part{The Code}
+\input{chapters/ch11_code_reading}
+
+% ============================================================
+\backmatter
+% ============================================================
+
+\chapter*{Notation}
+\addcontentsline{toc}{chapter}{Notation}
+
+\begin{tabular}{ll}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} \\
+\midrule
+$s, s'$ & State, next state \\
+$a, a'$ & Action, next action \\
+$r$ & Reward \\
+$\gamma$ & Discount factor \\
+$\pi(a|s)$ & Stochastic policy \\
+$\mu(s)$ & Deterministic policy \\
+$\pi_\theta$ & Policy parameterized by $\theta$ \\
+$V^{\pi}(s)$ & State-value function under $\pi$ \\
+$Q^{\pi}(s,a)$ & Action-value function under $\pi$ \\
+$V^{\ast}(s), Q^{\ast}(s,a)$ & Optimal value functions \\
+$A^{\pi}(s,a)$ & Advantage function: $Q^{\pi}(s,a) - V^{\pi}(s)$ \\
+$G_t$ & Discounted return from time $t$ \\
+$\mathbb{E}[\cdot]$ & Expectation \\
+$\hat{\mathbb{E}}[\cdot]$ & Sample estimate of expectation \\
+$\mathcal{H}(\pi)$ & Entropy of policy $\pi$ \\
+$D_{\mathrm{KL}}$ & Kullback-Leibler divergence \\
+$\alpha$ & Learning rate or temperature parameter (SAC) \\
+$\epsilon$ & Exploration rate ($\epsilon$-greedy) or clipping range (PPO) \\
+\bottomrule
+\end{tabular}
+
+\end{document}

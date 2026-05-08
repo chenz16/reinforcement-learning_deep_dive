@@ -1,0 +1,264 @@
+\chapter{The Loss Landscape of RL}
+\label{ch:loss-landscape}
+
+Reinforcement learning borrows the optimization machinery of supervised learning---forward pass, loss computation, backpropagation, parameter update---but the losses it optimizes are fundamentally different. In supervised learning, the loss measures deviation from externally provided labels on a fixed dataset. In RL, the ``labels'' are constructed by the agent itself, the data distribution shifts as the policy changes, and the loss must encode not just fitting accuracy but also exploration incentives and distributional control.
+
+This chapter traces the evolution of RL loss functions: from MSE regression on Bellman targets, through direct Q-maximization, to weighted log-likelihood and entropy regularization. Each transition addresses a specific failure mode of the previous formulation.
+
+%% ----------------------------------------------------------------
+\section{Value-Based Loss: MSE on Self-Generated Labels}
+\label{sec:td-mse}
+
+The starting point is deceptively simple. DQN and Q-learning frame RL as a regression problem:
+\begin{equation}
+  \mathcal{L}_{\text{critic}} = \bigl(Q_\theta(s,a) - y\bigr)^2,
+  \qquad
+  y = r + \gamma \max_{a'} Q_{\bar\theta}(s', a'),
+  \label{eq:td-loss}
+\end{equation}
+where $\bar\theta$ denotes the parameters of a slowly updated target network.
+
+\begin{keyidea}[Self-Bootstrapping Regression]
+The target $y$ is not an external ground-truth label. It is computed by the model itself through the Bellman bootstrap and the $\max$ operator. The model creates its own labels, then fits those labels. This is the core characteristic of TD learning and the reason it is \emph{not} ordinary MSE.
+\end{keyidea}
+
+Two consequences follow immediately:
+\begin{enumerate}
+  \item \textbf{The target is noisy.} Because $Q_{\bar\theta}$ is an approximation, $y$ carries estimation error that feeds back into training.
+  \item \textbf{The $\max$ operator amplifies noise.} Among noisy estimates, the maximum is biased upward (Section~\ref{sec:overestimation}).
+\end{enumerate}
+
+%% ----------------------------------------------------------------
+\section{Q Overestimation}
+\label{sec:overestimation}
+
+Suppose each action's Q-estimate decomposes as
+\begin{equation}
+  \hat{Q}(a) = Q^*(a) + \epsilon(a),
+  \qquad \epsilon(a) \sim \text{noise}.
+\end{equation}
+When we take the maximum over actions, the action whose noise $\epsilon(a)$ happens to be largest is preferentially selected. By Jensen's inequality applied to the convex $\max$ function:
+\begin{equation}
+  \mathbb{E}\!\bigl[\max_a \hat{Q}(a)\bigr]
+  \;\ge\;
+  \max_a \mathbb{E}\!\bigl[\hat{Q}(a)\bigr].
+  \label{eq:overestimation}
+\end{equation}
+
+This is not a peculiarity of DQN. \emph{Any} algorithm that relies on $\max Q$, $\arg\max Q$, or advantage ranking faces the same issue. The difference between algorithms lies in how aggressively they mitigate it.
+
+\begin{keyidea}[Overestimation Is Structural]
+Q overestimation is not a bug in a particular implementation. It is a mathematical consequence of taking the maximum of noisy estimates. The more actions, the larger the bias.
+\end{keyidea}
+
+%% ----------------------------------------------------------------
+\section{Double DQN and TD3: Stabilizing the Target}
+\label{sec:double-td3}
+
+\subsection{Double DQN}
+
+The core idea is to \emph{decouple action selection from value evaluation}. Standard DQN uses the same (noisy) network for both:
+\begin{equation}
+  y_{\text{DQN}} = r + \gamma \max_{a'} Q_{\bar\theta}(s', a').
+\end{equation}
+Double DQN selects the action with the online network but evaluates it with the target network:
+\begin{equation}
+  a^* = \arg\max_{a'} Q_\theta(s', a'),
+  \qquad
+  y_{\text{DDQN}} = r + \gamma\, Q_{\bar\theta}(s', a^*).
+  \label{eq:double-dqn}
+\end{equation}
+This does not eliminate bias entirely, but it breaks the positive feedback loop in which the same noisy Q is responsible for both choosing and scoring.
+
+\subsection{TD3: Clipped Double-Q for Continuous Actions}
+
+TD3 extends the idea to continuous action spaces. It maintains two independent critics $Q_{\phi_1}$, $Q_{\phi_2}$ and uses the more pessimistic estimate:
+\begin{equation}
+  y = r + \gamma \min\bigl(Q_{\phi_1}(s', \tilde{a}'),\; Q_{\phi_2}(s', \tilde{a}')\bigr),
+  \qquad
+  \tilde{a}' = \mu_{\bar\theta}(s') + \text{clip}(\epsilon, -c, c).
+  \label{eq:td3-target}
+\end{equation}
+The $\min$ produces a conservative estimate that counteracts the actor's tendency to exploit critic errors. Two additional mechanisms---\emph{delayed policy updates} (let the critic stabilize before updating the actor) and \emph{target policy smoothing} (add clipped noise to the target action)---further prevent the actor from chasing sharp, unreliable peaks in the Q landscape.
+
+%% ----------------------------------------------------------------
+\section{Max-Q Loss: The Actor Directly Maximizes Q}
+\label{sec:max-q}
+
+In discrete action spaces, $\arg\max_a Q(s,a)$ is trivial: enumerate all actions, pick the winner. In continuous spaces this is intractable, so DDPG introduces an actor network $\mu_\theta(s)$ trained to output the action that maximizes the critic:
+\begin{equation}
+  \mathcal{L}_{\text{actor}} = -\,Q_\phi\!\bigl(s,\, \mu_\theta(s)\bigr).
+  \label{eq:ddpg-actor}
+\end{equation}
+Minimizing this loss is equivalent to gradient ascent on $Q$ with respect to the actor's output. The gradient signal flows through the critic: $\nabla_\theta \mathcal{L}_{\text{actor}} = -\nabla_a Q_\phi(s,a)\big|_{a=\mu_\theta(s)} \cdot \nabla_\theta \mu_\theta(s)$.
+
+\begin{keyidea}[Differentiable Argmax]
+DDPG's actor loss turns the discrete, non-differentiable $\arg\max$ operation into a differentiable gradient optimization problem. The actor uses the critic's gradient landscape $\nabla_a Q$ to steer its output toward high-value actions.
+\end{keyidea}
+
+\subsection{The Fundamental Risk}
+
+The critic's Q is not the true value function---it has noise, bias, and overestimation. If the actor relentlessly climbs the Q surface, it may converge not to truly good actions but to actions where the critic's \emph{estimation error} is largest. This is why TD3 requires its suite of protective measures (double critic, delayed updates, target smoothing).
+
+\subsection{Placing Max-Q in the Loss Evolution}
+
+\begin{center}
+\begin{tabular}{@{} l l @{}}
+\toprule
+\textbf{Loss type} & \textbf{What it does} \\
+\midrule
+MSE (TD) & Make $Q$ approximate a Bellman target --- passive fitting \\
+Max-Q (DDPG actor) & Make the actor output high-$Q$ actions --- actively exploiting the Q landscape \\
+Policy gradient & Make good actions more probable --- directly shaping the distribution \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+MSE says ``I estimate value.'' Max-Q says ``I exploit my estimates for decisions.'' Policy gradient says ``I directly optimize decisions.''
+
+%% ----------------------------------------------------------------
+\section{Policy Gradient: Gradient First, Loss Second}
+\label{sec:pg-loss}
+
+Policy gradient methods bypass the Q landscape entirely. The objective is the expected return:
+\begin{equation}
+  J(\theta) = \mathbb{E}_{\pi_\theta}\!\bigl[\text{return}\bigr].
+\end{equation}
+The policy gradient theorem yields:
+\begin{equation}
+  \nabla_\theta J(\theta)
+  = \mathbb{E}_{s,a\sim\pi_\theta}\!\bigl[
+    \nabla_\theta \log\pi_\theta(a\mid s)\;\hat{A}(s,a)
+  \bigr],
+  \label{eq:pg}
+\end{equation}
+where $\hat{A}(s,a)$ is an advantage estimate.
+
+\subsection{Why ``Gradient First''}
+
+A common source of confusion: value-based methods start from a loss and derive a gradient, but policy gradient derivations start from the gradient and only mention a loss at the end. The reason is structural.
+
+\textbf{Value-based:} There is a natural regression target $y$. The loss $\mathcal{L} = (Q - y)^2$ is the starting point; the gradient follows from differentiation.
+
+\textbf{Policy gradient:} The starting point is the objective $J(\theta)$. The gradient~\eqref{eq:pg} is derived via the likelihood ratio trick applied to trajectory probabilities. No loss function is written first.
+
+To use automatic differentiation frameworks, we \emph{construct a surrogate loss after the fact}:
+\begin{equation}
+  \mathcal{L}_{\text{PG}} = -\log\pi_\theta(a\mid s)\;\hat{A}(s,a).
+  \label{eq:pg-loss}
+\end{equation}
+Differentiating this with respect to $\theta$ recovers exactly the policy gradient~\eqref{eq:pg} (with the sign flip because optimizers minimize). The loss is an engineering artifact for autograd, not the conceptual starting point.
+
+\begin{keyidea}[Constructed Loss]
+In value-based RL, loss comes first and gradient follows. In policy gradient RL, the gradient comes first from mathematical derivation; the loss is constructed afterward so that \texttt{loss.backward()} produces the correct gradient.
+\end{keyidea}
+
+Yet in code, both families share the same training loop: \texttt{loss = compute\_loss(batch); loss.backward(); optimizer.step()}.
+
+%% ----------------------------------------------------------------
+\section{Connection to Maximum Likelihood}
+\label{sec:mle-connection}
+
+\subsection{Behavior Cloning as Unweighted MLE}
+
+Given demonstration data $\{(s_i, a_i)\}$, behavior cloning maximizes:
+\begin{equation}
+  \sum_i \log\pi_\theta(a_i \mid s_i).
+\end{equation}
+Every observed action receives equal weight. The model learns ``a human did this,'' with no notion of whether ``this'' was good or bad.
+
+\subsection{Policy Gradient as Weighted MLE}
+
+Policy gradient adds a quality signal:
+\begin{equation}
+  \mathcal{L}_{\text{PG}} = -\hat{A}(s,a)\;\log\pi_\theta(a \mid s).
+\end{equation}
+The advantage $\hat{A}$ serves as a per-sample weight. Actions that led to higher returns get amplified; actions that underperformed get suppressed.
+
+\begin{keyidea}[From MLE to Weighted MLE]
+Behavior cloning (unweighted MLE) models behavioral frequency: ``this action appeared, so increase its probability.'' Policy gradient (weighted MLE) models behavioral frequency with preference weights: ``this action appeared \emph{and} brought high returns, so increase its probability proportionally.''
+\end{keyidea}
+
+This perspective makes the conceptual shift transparent:
+\begin{center}
+\begin{tabular}{@{} l l @{}}
+\toprule
+\textbf{Method} & \textbf{What it models} \\
+\midrule
+MLE / Behavior Cloning & Frequency of observed actions \\
+Policy Gradient & Frequency weighted by quality of outcomes \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%% ----------------------------------------------------------------
+\section{Entropy: Sampling Distribution Regularization}
+\label{sec:entropy}
+
+PPO and SAC both include an entropy bonus $\mathcal{H}[\pi_\theta(\cdot \mid s)]$. Its role is often trivialized as ``encouraging randomness.'' The real function is more precise: it prevents the policy distribution from collapsing prematurely.
+
+\subsection{The Collapse Mechanism}
+
+Without entropy regularization, the policy gradient pushes probability mass toward actions with high estimated advantage. The resulting feedback loop is:
+\begin{equation*}
+  \text{policy concentrates}
+  \;\to\; \text{sampling narrows}
+  \;\to\; \text{data diversity drops}
+  \;\to\; \text{Q/advantage estimates degrade}
+  \;\to\; \text{local optima.}
+\end{equation*}
+
+\subsection{Entropy as a Distributional Force}
+
+Policy optimization involves two competing forces:
+
+\begin{center}
+\begin{tabular}{@{} l l @{}}
+\toprule
+\textbf{Force} & \textbf{Effect} \\
+\midrule
+Preference term $\hat{A}\cdot\log\pi$ & Push probability toward high-advantage actions \\
+Entropy term $\mathcal{H}[\pi]$ & Pull the distribution toward uniformity \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The learned policy is the equilibrium between these two forces---neither a uniform distribution nor a collapsed delta, but a controlled trade-off.
+
+\subsection{SAC: Entropy as Part of the Objective}
+
+SAC goes further by writing the objective as:
+\begin{equation}
+  J_{\text{SAC}}(\theta) = \mathbb{E}\!\Bigl[\sum_t r_t + \alpha\,\mathcal{H}\bigl[\pi_\theta(\cdot \mid s_t)\bigr]\Bigr],
+  \label{eq:sac-obj}
+\end{equation}
+where $\alpha$ is a temperature parameter (often auto-tuned). Exploration is no longer an external trick appended to the loss; it is a first-class component of the optimization objective. Sampling diversity is something the agent is \emph{rewarded} for.
+
+%% ----------------------------------------------------------------
+\section{The Full Loss Evolution}
+\label{sec:loss-evolution}
+
+We can now see the complete arc:
+
+\begin{center}
+\begin{tabular}{@{} l l l @{}}
+\toprule
+\textbf{Loss layer} & \textbf{Formula sketch} & \textbf{What it controls} \\
+\midrule
+MSE (TD) & $(Q - y)^2$ & Value estimation accuracy \\
+Max-Q (actor) & $-Q(s, \mu_\theta(s))$ & Action quality via critic landscape \\
+Weighted $\log\pi$ & $-\hat{A}\cdot\log\pi_\theta(a \mid s)$ & Preference-weighted behavior \\
+Entropy & $+\alpha\,\mathcal{H}[\pi]$ & Sampling diversity control \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+These four layers correspond to four progressively deeper concerns:
+\begin{enumerate}
+  \item \textbf{Estimate value} (how much is this worth?).
+  \item \textbf{Exploit estimates} (given the value landscape, what should I do?).
+  \item \textbf{Shape the policy} (make good actions more probable).
+  \item \textbf{Control the distribution} (keep the policy from collapsing).
+\end{enumerate}
+
+Modern algorithms like SAC combine all four layers---a critic trained with TD-MSE, an actor that maximizes entropy-augmented Q, and an entropy term that regularizes the policy distribution---into a single coherent framework. Understanding each layer in isolation makes the composite loss transparent.

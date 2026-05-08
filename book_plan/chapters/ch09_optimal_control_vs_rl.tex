@@ -1,0 +1,232 @@
+\chapter{Optimal Control and RL --- Same Problem, Different Trade-offs}
+\label{ch:oc-vs-rl}
+
+Optimal Control (OC) and Reinforcement Learning (RL) are taught in different departments, published in different journals, and spoken about in different jargon.
+Yet they solve the same problem: \emph{given the current state, choose an action that maximises long-term cumulative reward}.
+The differences are engineering trade-offs along three dimensions---rollout, optimisation, and data---each with its own hidden costs.
+
+%------------------------------------------------------------------
+\section{Three Dimensions of Comparison}
+\label{sec:oc-rl-3d}
+
+\begin{keyidea}[One Problem --- Three Trade-offs]
+Every sequential decision system must (i) \emph{imagine} the future (rollout), (ii) \emph{decide} what to do (optimisation), and (iii) \emph{fuel} the process with information (data).
+OC and RL make opposite bets on each axis.
+\end{keyidea}
+
+\subsection{Rollout: How to Imagine the Future}
+
+\textbf{Optimal Control} maintains an \emph{explicit} dynamics model
+$s_{t+1} = f(s_t, a_t)$ (or a stochastic variant $s_{t+1}\sim P(\cdot|s_t,a_t)$)
+and simulates forward online at every control step.
+Model Predictive Control (MPC) is the canonical example: at each timestep it rolls out the model over a horizon $T$, solves for the optimal action sequence, executes the first action, and repeats.
+The model is typically low-dimensional and hand-calibrated; real-time sensor feedback corrects drift.
+
+\textbf{RL} has no explicit model.\footnote{Model-based RL learns one, blurring the line---see Section~\ref{sec:fusion}.}
+Instead, it compresses rollout knowledge \emph{offline} into network parameters through massive environment interaction.
+At deployment, a single forward pass through $Q_\theta(s,a)$ or $\pi_\theta(a|s)$ replaces the explicit rollout.
+The ``imagination'' is implicit---baked into weights, not equations.
+
+\begin{table}[htbp]
+\centering
+\caption{Rollout comparison.}
+\begin{tabular}{@{}lll@{}}
+\toprule
+& \textbf{Optimal Control} & \textbf{RL} \\
+\midrule
+Model & Explicit $f(s,a)$ & Implicit (encoded in network) \\
+When & Online, every step & Offline training; online inference \\
+Input & Precise low-dim state & Accepts high-dim, fuzzy inputs \\
+Correction & Real-time sensor feedback & Generalisation ability \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Optimisation: When Does It Happen?}
+
+OC solves an optimisation problem \emph{online} at every timestep:
+\[
+  a^\star = \arg\min_{a_{0:T}} \sum_{t=0}^{T} \ell(s_t, a_t)
+  \quad\text{subject to } s_{t+1}=f(s_t,a_t).
+\]
+MPC iterates this at control frequency, making deployment compute \emph{high}.
+
+RL pushes all heavy optimisation into offline training.
+Online deployment is a single forward pass---$a = \pi_\theta(s)$---making deployment compute \emph{low}.
+The price is that adapting to a new scenario requires retraining or fine-tuning, whereas MPC re-optimises automatically given a new state.
+
+\subsection{Data: Few Parameters vs.\ Massive Interactions}
+
+OC's ``data'' is a small set of calibrated parameters---masses, friction coefficients, gear ratios---typically tens to hundreds of scalars obtained through physical measurement or system identification.
+Online data is real-time sensor feedback used for correction, not for training.
+
+RL requires millions to billions of $(s,a,r,s')$ transitions, collected in simulation or the real world.
+Training compresses this experience into network parameters.
+
+\begin{keyidea}[RL Model = Compressed Offline Experience]
+An RL policy network is a \emph{compressed representation} of offline interaction experience, designed for fast online inference.
+At deployment, no re-interaction with the environment is needed---the network has already encoded what to do.
+\end{keyidea}
+
+%------------------------------------------------------------------
+\section{The Hidden Constraints of Optimal Control}
+\label{sec:oc-constraints}
+
+OC looks elegant on paper but works because it makes very strong assumptions.
+These assumptions break in complex, high-dimensional, or poorly structured problems.
+
+\subsection{Constraint 1: Explicit Reference and Convex Structure}
+
+MPC and LQR require an explicit reference trajectory and constraints expressible in tractable form (linear or convex):
+\[
+  J = \sum_{t} (x_t - x_{\text{ref}})^\top Q\,(x_t - x_{\text{ref}}) + u_t^\top R\, u_t,
+  \qquad A x \le b.
+\]
+If constraints are nonlinear or non-convex, or if the reference itself is hard to define, the problem becomes intractable.
+
+Worse, the reference requirement \emph{cascades}:
+\[
+  \text{Perception} \;\longrightarrow\; \text{Planner} \;\longrightarrow\; \text{Controller}
+\]
+The controller needs a reference from the planner; the planner needs maps, goals, and semantic information from perception.
+Each layer has explicit interface requirements, and errors at any layer propagate and amplify downstream.
+System complexity is the \emph{product} of each layer's complexity, not the sum.
+
+RL (especially end-to-end RL) aims to skip this cascade:
+raw input $\longrightarrow$ neural network $\longrightarrow$ action.
+The cost is more data and training, but it avoids the layered explicit-interface problem.
+
+\subsection{Constraint 2: DOF Explosion}
+
+OC's online solving complexity grows steeply with degrees of freedom.
+For state dimension $n$, control dimension $m$, and prediction horizon $T$, MPC's optimisation variables number approximately $(n+m)\times T$.
+Standard QP solvers have complexity
+\[
+  \mathcal{O}\!\bigl(((n+m)T)^3\bigr).
+\]
+For high-DOF robots, multi-agent scenarios, or pixel-level control, online solving simply cannot keep up.
+
+RL is not bound by this: offline training can take as long as needed, and online inference scales linearly with input dimension (a single matrix multiply per layer).
+
+\subsection{Constraint 3: Poor Parallelisability}
+
+MPC's iterative solvers (QP, ADMM, interior point) are inherently sequential---each iteration depends on the previous one.
+They exploit GPUs poorly.
+
+RL training is naturally parallel: vectorised environments roll out simultaneously, samples within a mini-batch are independent (GPU matrix operations), and batch inference handles many inputs at once.
+
+\begin{table}[htbp]
+\centering
+\caption{Hidden costs summary.}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Constraint} & \textbf{OC} & \textbf{RL} \\
+\midrule
+Reference / convexity & Required & Not needed \\
+High DOF & $\mathcal{O}(((n{+}m)T)^3)$ & Linear inference \\
+GPU parallelism & Poor & Natural \\
+Massive offline data & Not needed & Required \\
+Training stability & N/A & Hard \\
+Online adaptation & Strong & Weak \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%------------------------------------------------------------------
+\section{Where They Fuse}
+\label{sec:fusion}
+
+In practice, OC and RL are not opponents but partners.
+
+\subsection{Model-Based RL}
+
+Algorithms such as Dreamer and MBPO \emph{learn} a dynamics model from data and use it for rollout inside RL training---combining OC's explicit imagination with RL's data-driven flexibility.
+
+\subsection{Hierarchical Stacks}
+
+A common architecture in autonomous driving and robotics:
+\begin{itemize}
+  \item \textbf{High level}: RL-trained planner selects waypoints or sub-goals.
+  \item \textbf{Low level}: MPC or PID controller tracks the reference with real-time feedback.
+\end{itemize}
+This lets each layer play to its strengths: RL handles the fuzzy, high-dimensional perception-to-planning mapping; OC handles the precise, low-dimensional tracking.
+
+\subsection{Sim2Real}
+
+Train an RL policy offline in simulation (where interactions are cheap and parallelisable), then deploy it on real hardware with sensor-based correction---blending RL's offline optimisation with OC's online correction philosophy.
+
+%------------------------------------------------------------------
+\section{The DP $\to$ RL Relaxation Chain}
+\label{sec:dp-relaxation}
+
+Dynamic Programming (DP) is the theoretical ancestor of both OC and RL.
+RL can be understood as DP with five successive relaxations of assumptions.
+
+\begin{keyidea}[Five Relaxations from DP to Modern RL]
+Each relaxation trades an idealised assumption for a practical mechanism, introducing a new source of bias that subsequent techniques must manage.
+\end{keyidea}
+
+\subsection{Relaxation 1: Unknown Model $\to$ Sampled Bellman Backup}
+
+DP assumes known $P(s'|s,a)$ and $R(s,a)$.
+In practice these are unknown; we can only observe samples $(s,a,r,s')$.
+The exact Bellman expectation becomes a sampled estimate---the origin of \textbf{TD learning}.
+\[
+  V(s) \leftarrow V(s) + \alpha\bigl[r + \gamma V(s') - V(s)\bigr]
+\]
+
+\subsection{Relaxation 2: Huge State Space $\to$ Function Approximation}
+
+DP can sweep every state in a table.
+Real state spaces are enormous or continuous.
+We replace tables with parameterised functions:
+$Q(s,a)\approx Q_\theta(s,a)$, $\pi(a|s)\approx\pi_\theta(a|s)$.
+The cost: \emph{function approximation bias}.
+
+\subsection{Relaxation 3: Policy-Dependent Data $\to$ Off-Policy / Replay}
+
+DP operates on the model directly---no ``data distribution'' problem.
+In RL, data comes from rollouts of the current or past policy, creating a closed loop where the policy shapes the data that trains it.
+Off-policy methods and replay buffers partially decouple this loop.
+
+\subsection{Relaxation 4: Noisy Q $\to$ Stabilised Greedy}
+
+DP's $\arg\max$ over true $Q$ is safe.
+RL's $\arg\max$ over a noisy $\hat{Q}$ amplifies estimation errors.
+This necessitates $\varepsilon$-greedy, Double Q, target networks, and entropy regularisation---all forms of \emph{stabilised approximate greedy}.
+
+\subsection{Relaxation 5: Hard Greedy $\to$ Soft Preference Optimisation}
+
+Even stabilised greedy remains fragile.
+Policy gradient, PPO, and SAC abandon hard $\arg\max$ entirely, instead \emph{directly optimising the policy distribution}.
+The shift is from ``solve for the optimal value, then extract the policy'' to ``directly shape the preference distribution through sampling and feedback.''
+
+\begin{table}[htbp]
+\centering
+\caption{The five relaxations from DP to RL.}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Stage} & \textbf{Assumption relaxed} & \textbf{Mechanism introduced} & \textbf{New bias} \\
+\midrule
+DP $\to$ Tabular RL & Known model & TD / sampled backup & Sampling noise \\
+Tabular $\to$ Deep RL & Finite states & Neural function approx. & Approx.\ bias \\
+Fixed data $\to$ RL & i.i.d.\ data & Replay / off-policy & Distribution shift \\
+True $Q$ $\to$ $\hat{Q}$ & Exact values & Double Q, target net & Overestimation \\
+Greedy $\to$ Soft & Hard $\arg\max$ & Entropy, PPO clip & Conservative bias \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%------------------------------------------------------------------
+\section{Summary}
+
+Optimal Control and RL are different engineering realisations of the same sequential decision problem:
+
+\begin{itemize}
+  \item \textbf{Know dynamics + low-dim + need real-time adaptation} $\to$ Optimal Control.
+  \item \textbf{Unknown dynamics + high-dim + can train offline} $\to$ RL.
+  \item \textbf{In practice}, the two fuse: model-based RL, hierarchical stacks, and Sim2Real loops.
+\end{itemize}
+
+The DP $\to$ RL relaxation chain shows that every RL technique---TD, replay, target networks, Double Q, entropy, clipping---is a direct response to relaxing one of DP's god's-eye-view assumptions.
+Understanding \emph{which} assumption each technique addresses is the key to reading any RL algorithm with clarity.

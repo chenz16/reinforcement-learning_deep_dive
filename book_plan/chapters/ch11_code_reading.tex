@@ -1,0 +1,418 @@
+\chapter{Reading Algorithms Through the Lens}
+\label{ch:code-reading}
+
+This chapter walks through thirteen algorithms in the order they appeared historically.
+For each, we answer four questions:
+\begin{enumerate}[label=(\alph*)]
+  \item Where does it sit in the macro evolution arc (Part~I)?
+  \item Which micro mechanism from Part~II does it embody?
+  \item What is the key code pattern (pseudocode / equations)?
+  \item What is the single ``aha'' insight?
+\end{enumerate}
+
+%==================================================================
+\section{DQN --- Deep Q-Network}
+\label{sec:dqn}
+
+\paragraph{(a) Macro arc.}
+DQN is the bridge from tabular RL to deep RL---the second relaxation in the DP$\to$RL chain (function approximation replaces the Q-table).
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Self-bootstrapping MSE}: the model creates its own labels via the Bellman target $y = r + \gamma\max_{a'}Q_{\text{target}}(s',a')$.
+\emph{Replay buffer} breaks temporal correlation.
+\emph{Target network} stabilises the moving target.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# DQN update
+batch = replay_buffer.sample(N)
+with no_grad():
+    q_target = batch.r + gamma * Q_target(batch.s_next).max(dim=-1)
+loss = mse_loss(Q(batch.s, batch.a), q_target)
+loss.backward(); optimizer.step()
+# periodically: Q_target.load_state_dict(Q.state_dict())
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+The label is computed by the model itself---this is not ordinary regression but \emph{self-bootstrapping regression}, which is why a target network is indispensable.
+
+%==================================================================
+\section{Double DQN}
+\label{sec:ddqn}
+
+\paragraph{(a) Macro arc.}
+A direct patch to DQN's overestimation problem---still within the ``stabilise greedy'' phase of evolution.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Separation of selection and evaluation}: the online network selects the best action; the target network evaluates it.
+This breaks the positive feedback loop where a single noisy $Q$ both picks and scores.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# Double DQN target
+a_star = Q_online(s_next).argmax(dim=-1)        # select with online
+q_target = r + gamma * Q_target(s_next, a_star)  # evaluate with target
+loss = mse_loss(Q_online(s, a), q_target)
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+$\mathbb{E}[\max \hat{Q}] > \max \mathbb{E}[\hat{Q}]$---taking the max of noisy estimates is \emph{always} biased upward.
+Splitting selection from evaluation does not eliminate the bias but breaks the self-reinforcing cycle.
+
+%==================================================================
+\section{Dueling DQN}
+\label{sec:dueling}
+
+\paragraph{(a) Macro arc.}
+An architectural refinement within the value-based family, improving representational efficiency without changing the loss.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Compressed representation}: decompose $Q$ into a state-value stream $V(s)$ and an advantage stream $A(s,a)$:
+\[
+  Q(s,a) = V(s) + A(s,a) - \frac{1}{|\mathcal{A}|}\sum_{a'} A(s,a').
+\]
+The subtraction of the mean advantage ensures identifiability.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# Dueling architecture forward pass
+features = backbone(s)
+v = value_head(features)          # shape: (B, 1)
+a = advantage_head(features)      # shape: (B, |A|)
+q = v + a - a.mean(dim=-1, keepdim=True)
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+Many states have similar value regardless of the action taken.
+Factoring out $V(s)$ lets the network say ``this state is good'' without having to re-derive that fact separately for every action.
+
+%==================================================================
+\section{REINFORCE}
+\label{sec:reinforce}
+
+\paragraph{(a) Macro arc.}
+The first policy-gradient algorithm---the pivot from value-first to policy-first in the macro evolution.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Weighted log-likelihood}: increase the probability of actions that led to high returns.
+The gradient $\nabla_\theta J = \mathbb{E}[\nabla_\theta\log\pi_\theta(a|s)\cdot G_t]$ is derived from the likelihood ratio trick, and the loss is constructed \emph{after the fact} for autograd.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# REINFORCE
+returns = compute_discounted_returns(rewards)   # G_t
+log_probs = [log_pi(a_t | s_t) for (s_t, a_t) in trajectory]
+loss = -sum(lp * G for lp, G in zip(log_probs, returns))
+loss.backward(); optimizer.step()
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+The loss is not the starting point---the \emph{gradient} is.
+The loss $-\log\pi\cdot G$ is reverse-engineered so that autograd reproduces the policy gradient theorem.
+
+%==================================================================
+\section{A2C --- Advantage Actor-Critic}
+\label{sec:a2c}
+
+\paragraph{(a) Macro arc.}
+Introduces a learned baseline (Critic) to REINFORCE, reducing variance while staying on-policy.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Actor-Critic split}: the Critic estimates $V(s)$; the advantage $A = r + \gamma V(s') - V(s)$ replaces the raw return $G_t$ as the weight.
+Two independent losses, two independent parameter sets, sharing the same batch of on-policy data.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# A2C
+v = critic(s); v_next = critic(s_next)
+advantage = r + gamma * v_next.detach() - v.detach()  # stop_gradient
+loss_actor  = -(log_pi(a|s) * advantage).mean()
+loss_critic = mse_loss(v, (r + gamma * v_next).detach())
+(loss_actor + loss_critic).backward(); optimizer.step()
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+The advantage is \texttt{detach()}'d when computing the actor loss---this is the concrete code manifestation of ``coupled in sampling, decoupled in gradients.''
+
+%==================================================================
+\section{DDPG --- Deep Deterministic Policy Gradient}
+\label{sec:ddpg}
+
+\paragraph{(a) Macro arc.}
+Extends Q-learning to continuous action spaces by replacing $\arg\max$ with a learned actor---the ``need an actor'' relaxation.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Max-$Q$ loss}: the actor's loss is $\mathcal{L} = -Q(s,\mu_\theta(s))$, directly maximising the critic's score.
+This turns discrete $\arg\max$ into a differentiable gradient-ascent problem.
+Off-policy with replay buffer.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# DDPG
+# Critic update
+a_next = actor_target(s_next)
+q_target = r + gamma * critic_target(s_next, a_next)
+loss_critic = mse_loss(critic(s, a), q_target.detach())
+
+# Actor update
+loss_actor = -critic(s, actor(s)).mean()   # gradient flows through Q to actor
+loss_actor.backward(); actor_optimizer.step()
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+The actor gradient flows \emph{through} the critic: $\nabla_\theta\mu_\theta(s)$ receives $\nabla_a Q(s,a)\big|_{a=\mu_\theta(s)}$.
+The critic's \emph{parameters} are frozen during this step, but its \emph{output} is not detached---this is the key difference from A2C's \texttt{stop\_gradient}.
+
+%==================================================================
+\section{TD3 --- Twin Delayed DDPG}
+\label{sec:td3}
+
+\paragraph{(a) Macro arc.}
+Patches DDPG's three failure modes: overestimation, actor exploiting critic errors, and sensitivity to sharp $Q$ peaks.
+
+\paragraph{(b) Micro mechanisms.}
+Three stabilisation tricks:
+(i) \emph{Clipped double $Q$}: $y = r + \gamma\min(Q_1, Q_2)$ suppresses overestimation.
+(ii) \emph{Delayed policy update}: update actor every $d$ critic steps so the critic stabilises first.
+(iii) \emph{Target policy smoothing}: add noise to the target action to prevent the actor from exploiting narrow $Q$ peaks.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# TD3 critic target
+a_next = actor_target(s_next) + clip(noise, -c, c)  # smoothing
+q1_tgt = critic1_target(s_next, a_next)
+q2_tgt = critic2_target(s_next, a_next)
+q_target = r + gamma * min(q1_tgt, q2_tgt)
+
+# Actor update (every d steps only)
+if step % d == 0:
+    loss_actor = -critic1(s, actor(s)).mean()
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+TD3 is a case study in \emph{bias management}: every trick trades a small conservative bias for a large reduction in destructive overestimation.
+
+%==================================================================
+\section{TRPO --- Trust Region Policy Optimisation}
+\label{sec:trpo}
+
+\paragraph{(a) Macro arc.}
+The theoretical foundation for constrained policy updates---ensures monotonic improvement by bounding the KL divergence between old and new policies.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Trust region}: maximise a surrogate objective subject to a KL constraint:
+\[
+  \max_\theta\; \mathbb{E}\!\Bigl[\frac{\pi_\theta(a|s)}{\pi_{\text{old}}(a|s)} A^{\pi_{\text{old}}}(s,a)\Bigr]
+  \quad\text{s.t.}\quad \mathbb{E}\!\bigl[D_{\text{KL}}(\pi_{\text{old}}\|\pi_\theta)\bigr] \le \delta.
+\]
+Solved via conjugate gradient + line search on the natural gradient.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# TRPO (simplified)
+ratio = pi_new(a|s) / pi_old(a|s)
+surrogate = (ratio * advantage).mean()
+g = grad(surrogate, theta)                # policy gradient
+Hv = lambda v: fisher_vector_product(v)   # F * v
+step_dir = conjugate_gradient(Hv, g)      # F^{-1} g
+step_size = sqrt(2*delta / (step_dir @ Hv(step_dir)))
+theta += step_size * step_dir             # with line search for KL
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+TRPO shows that \emph{how far} you step matters as much as \emph{which direction} you step.
+The KL constraint turns an unconstrained, unstable optimisation into a monotonically improving sequence.
+
+%==================================================================
+\section{PPO --- Proximal Policy Optimisation}
+\label{sec:ppo}
+
+\paragraph{(a) Macro arc.}
+The practical successor to TRPO---replaces the expensive conjugate-gradient solve with a simple clipped surrogate, making trust-region ideas accessible to large-scale training.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Clipped ratio}: the importance ratio $r(\theta) = \pi_\theta(a|s)/\pi_{\text{old}}(a|s)$ is clipped to $[1{-}\varepsilon,\,1{+}\varepsilon]$, preventing any single sample from causing a destructively large update.
+Near on-policy: data from $\pi_{\text{old}}$, reused for a few epochs.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# PPO clipped objective
+ratio = pi_theta(a|s) / pi_old(a|s)
+clip_ratio = clip(ratio, 1-eps, 1+eps)
+loss = -min(ratio * A, clip_ratio * A).mean()
+loss.backward(); optimizer.step()
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+PPO deliberately introduces bias (clipping discards some gradient information) to buy stability.
+It is the canonical example of \emph{trading bias for engineering reliability}.
+
+%==================================================================
+\section{SAC --- Soft Actor-Critic}
+\label{sec:sac}
+
+\paragraph{(a) Macro arc.}
+The culmination of the ``abandon hard argmax'' trend---entropy becomes part of the objective, not an external trick.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Maximum entropy RL}: the objective is
+$J = \mathbb{E}\bigl[\sum_t r_t + \alpha\,\mathcal{H}[\pi(\cdot|s_t)]\bigr]$.
+Clipped double $Q$ (from TD3) for the critic.
+Automatic temperature $\alpha$ tuning to maintain a target entropy.
+Off-policy with replay buffer.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# SAC actor update
+a_new, log_prob = pi.sample(s)   # reparameterised
+q1, q2 = critic1(s, a_new), critic2(s, a_new)
+loss_actor = (alpha * log_prob - min(q1, q2)).mean()
+
+# SAC critic update
+with no_grad():
+    a_next, log_prob_next = pi.sample(s_next)
+    q_target = r + gamma * (min(Q1_tgt(s_next, a_next),
+                                Q2_tgt(s_next, a_next))
+                            - alpha * log_prob_next)
+loss_critic = mse_loss(Q(s, a), q_target)
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+SAC's entropy-augmented objective is a \emph{biased} objective on purpose.
+It does not maximise raw reward but entropy-regularised reward---and this intentional bias makes exploration natural, $Q$-learning smoother, and the policy resistant to premature collapse.
+
+%==================================================================
+\section{GRPO --- Group Relative Policy Optimisation}
+\label{sec:grpo}
+
+\paragraph{(a) Macro arc.}
+A simplification of PPO for LLM alignment that eliminates the Critic, moving further along the ``fewer models'' trend from PPO $\to$ GRPO $\to$ DPO.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Group-relative baseline}: instead of a learned $V(s)$, GRPO generates $G$ completions per prompt and uses within-group reward statistics (mean, std) as the baseline.
+This turns the advantage into a \emph{relative ranking} within the group:
+\[
+  A_i = \frac{R_i - \text{mean}(\{R_j\}_{j=1}^G)}{\text{std}(\{R_j\}_{j=1}^G)}.
+\]
+KL penalty against a reference model prevents drift.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# GRPO
+responses = [policy.generate(prompt) for _ in range(G)]
+rewards = [reward_fn(prompt, resp) for resp in responses]
+advantages = (rewards - mean(rewards)) / (std(rewards) + eps)
+for resp, A in zip(responses, advantages):
+    ratio = pi_theta(resp|prompt) / pi_old(resp|prompt)
+    loss = -clip(ratio, 1-eps, 1+eps) * A
+    loss += beta * kl_divergence(pi_theta, pi_ref)
+loss.backward(); optimizer.step()
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+You do not need a learned value function to compute advantage---comparing siblings from the same prompt provides a surprisingly effective baseline, because it automatically controls for prompt difficulty.
+
+%==================================================================
+\section{DPO --- Direct Preference Optimisation}
+\label{sec:dpo}
+
+\paragraph{(a) Macro arc.}
+The furthest point on the simplification axis: no RM, no Critic, no RL loop---preference learning reduced to a single classification loss.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Implicit reward}: DPO derives that the optimal RL policy under a Bradley--Terry preference model satisfies
+$r(x,y) = \beta\log\frac{\pi(y|x)}{\pi_{\text{ref}}(y|x)} + C$.
+Substituting this into the preference loss yields a closed-form objective that depends only on the policy and reference:
+\[
+  \mathcal{L}_{\text{DPO}} = -\log\sigma\!\Bigl(\beta\Bigl[
+    \log\frac{\pi_\theta(y_w|x)}{\pi_{\text{ref}}(y_w|x)}
+    - \log\frac{\pi_\theta(y_l|x)}{\pi_{\text{ref}}(y_l|x)}
+  \Bigr]\Bigr).
+\]
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# DPO
+logr_w = log_pi_theta(y_win|x) - log_pi_ref(y_win|x)
+logr_l = log_pi_theta(y_lose|x) - log_pi_ref(y_lose|x)
+loss = -log_sigmoid(beta * (logr_w - logr_l))
+loss.backward(); optimizer.step()
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+DPO shows that the reward model is not a separate entity---it is \emph{implicit} in the ratio $\pi/\pi_{\text{ref}}$.
+By algebraically eliminating the RM, DPO collapses the entire RLHF pipeline into a single supervised loss on preference pairs.
+
+%==================================================================
+\section{ProRL --- Process-Reward RL}
+\label{sec:prorl}
+
+\paragraph{(a) Macro arc.}
+ProRL represents the frontier of RL for reasoning: instead of scoring only the final answer (outcome reward), it provides reward at each reasoning step (process reward), enabling finer-grained credit assignment in chain-of-thought settings.
+
+\paragraph{(b) Micro mechanisms.}
+\emph{Process Reward Model (PRM)}: a learned model that scores each intermediate step of a reasoning chain, trained on step-level annotations.
+This converts a sparse-reward problem (correct/incorrect final answer) into a dense-reward MDP where each reasoning step receives feedback.
+Combined with policy gradient (PPO or GRPO variants), the per-step reward dramatically improves credit assignment.
+
+\paragraph{(c) Key code pattern.}
+
+\begin{lstlisting}[language=Python]
+# ProRL with Process Reward Model
+steps = policy.generate_chain_of_thought(prompt)  # list of steps
+step_rewards = [PRM.score(prompt, steps[:i+1]) for i in range(len(steps))]
+# Compute per-step advantage using step-level rewards
+advantages = compute_gae(step_rewards, values, gamma, lam)
+for step, A in zip(steps, advantages):
+    ratio = pi_theta(step|context) / pi_old(step|context)
+    loss = -clip(ratio, 1-eps, 1+eps) * A
+loss.backward(); optimizer.step()
+\end{lstlisting}
+
+\paragraph{(d) Aha.}
+Outcome reward tells you \emph{whether} you got it right; process reward tells you \emph{where} you went wrong.
+By rewarding each reasoning step, ProRL turns the credit-assignment problem in long chains of thought from a needle-in-a-haystack search into a step-by-step guided climb.
+
+%==================================================================
+\section{Summary: The Evolution at a Glance}
+
+\begin{table}[htbp]
+\centering
+\caption{Thirteen algorithms mapped to the evolution arc and micro mechanisms.}
+\small
+\begin{tabular}{@{}rlll@{}}
+\toprule
+\textbf{\#} & \textbf{Algorithm} & \textbf{Core micro mechanism} & \textbf{Key trade-off} \\
+\midrule
+1  & DQN        & Self-bootstrapping MSE + replay            & Bias from moving target \\
+2  & Double DQN & Separate selection / evaluation             & Reduced overestimation \\
+3  & Dueling DQN & $V$/$A$ decomposition                     & Better state-value sharing \\
+4  & REINFORCE  & Weighted log-likelihood                     & High variance \\
+5  & A2C        & Critic as baseline                          & Two-optimizer instability \\
+6  & DDPG       & Max-$Q$ loss for continuous actions          & Actor exploits critic \\
+7  & TD3        & Twin critics + delayed update               & Conservative bias \\
+8  & TRPO       & KL-constrained trust region                 & Expensive second-order solve \\
+9  & PPO        & Clipped importance ratio                    & Bias for stability \\
+10 & SAC        & Max-entropy objective                       & Entropy-biased reward \\
+11 & GRPO       & Group-relative baseline                     & No learned value function \\
+12 & DPO        & Implicit reward in $\pi/\pi_{\text{ref}}$  & No online RL loop \\
+13 & ProRL      & Step-level process reward                   & Needs step-level annotations \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Reading these thirteen algorithms in sequence reveals a clear narrative: the field moved from \emph{learning values and extracting behaviour via argmax} toward \emph{directly shaping preference distributions}, while progressively simplifying the training infrastructure from four models (PPO) to two (DPO) to dense per-step feedback (ProRL).
+Every ``trick''---replay, target networks, double Q, clipping, entropy, group baselines---is a specific response to a specific failure mode in the closed loop where the policy shapes its own training data.
+Once you see this pattern, no RL algorithm is truly mysterious.

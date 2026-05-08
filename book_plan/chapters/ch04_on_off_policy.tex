@@ -1,0 +1,200 @@
+\chapter{On-Policy, Off-Policy, and the Sampling Problem}
+\label{ch:on-off-policy}
+
+Whether an algorithm is on-policy or off-policy is not a label to memorize per algorithm name. It is a consequence of a single question about the algorithm's update rule. This chapter derives the answer from first principles for every major algorithm family, then examines the practical implications for data efficiency.
+
+%% ----------------------------------------------------------------
+\section{The First-Principles Criterion}
+\label{sec:criterion}
+
+To classify any RL algorithm, ask one question:
+
+\begin{keyidea}[The Sampling Criterion]
+Does the update formula require the actions in the training data to have been sampled by the \emph{current} policy $\pi_\theta$?
+\end{keyidea}
+
+More precisely, check whether two chains are consistent:
+\begin{itemize}
+  \item \textbf{Sampling chain:} Which policy selected the actions in the data?
+  \item \textbf{Optimization chain:} Which policy's parameters are being updated?
+\end{itemize}
+
+This yields three categories:
+\begin{center}
+\begin{tabular}{@{} l l @{}}
+\toprule
+\textbf{Category} & \textbf{Requirement on data actions} \\
+\midrule
+On-policy & $a \sim \pi_\theta(a \mid s)$ \quad (current policy) \\
+Off-policy & $a \sim \mu(a \mid s)$ \quad (any behavior policy) \\
+Near on-policy & $a \sim \pi_{\text{old}}(a \mid s)$, with $\pi_{\text{old}} \approx \pi_\theta$ enforced \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The real criterion is not ``whether there is a replay buffer'' but whether the action distribution in the data must match the distribution of the policy currently being optimized.
+
+%% ----------------------------------------------------------------
+\section{Why Policy Gradient Is On-Policy}
+\label{sec:pg-on}
+
+The policy gradient takes the form:
+\begin{equation}
+  \nabla_\theta J(\theta)
+  = \mathbb{E}_{s,a \,\sim\, \pi_\theta}\!\bigl[
+      \nabla_\theta \log\pi_\theta(a \mid s)\;\hat{A}^{\pi_\theta}(s,a)
+    \bigr].
+  \label{eq:pg-onpolicy}
+\end{equation}
+
+The expectation is taken over $s, a \sim \pi_\theta$. This is not a notational convenience; it is a mathematical requirement. The derivation uses the identity $\nabla_\theta \pi_\theta(a \mid s) = \pi_\theta(a \mid s)\,\nabla_\theta\log\pi_\theta(a \mid s)$, which only produces an unbiased gradient estimate when actions are drawn from $\pi_\theta$.
+
+If actions came from an old or different policy $\mu \neq \pi_\theta$, the weighted log-likelihood $\log\pi_\theta(a \mid s)\cdot\hat{A}(s,a)$ is no longer an unbiased estimate of $\nabla_\theta J(\theta)$.
+
+\begin{keyidea}[PG Is On-Policy by Derivation]
+REINFORCE, A2C, and A3C are on-policy not because of their names, but because the gradient formula~\eqref{eq:pg-onpolicy} requires $a$ to come from the current $\pi_\theta$'s sampling distribution.
+\end{keyidea}
+
+%% ----------------------------------------------------------------
+\section{Why Q-Learning Is Off-Policy}
+\label{sec:ql-off}
+
+The Q-learning target is:
+\begin{equation}
+  y = r + \gamma \max_{a'} Q_{\bar\theta}(s', a').
+  \label{eq:ql-target}
+\end{equation}
+
+Crucially, this target does not depend on how action $a$ was selected. The transition $(s, a, r, s')$ tells us: ``someone executed $a$ in $s$ and observed $r, s'$.'' The target then asks: ``if the agent acts greedily from $s'$ onward, what is the expected return?'' The identity of ``someone'' is irrelevant---it could be the current policy, an old policy, a human operator, or a random controller.
+
+\begin{keyidea}[Bellman Doesn't Care Who Sampled]
+Q-learning's target involves $\max_{a'} Q(s', a')$, which is independent of the behavior policy that generated the data. This is why Q-learning can learn from a replay buffer of transitions collected by arbitrary policies---the fundamental reason it is off-policy.
+\end{keyidea}
+
+The same logic extends to DQN and Double DQN: the Bellman target depends on the \emph{target network's} value estimates, not on the policy that produced the stored transitions.
+
+%% ----------------------------------------------------------------
+\section{Why PPO Is Near On-Policy}
+\label{sec:ppo-near}
+
+PPO collects data with a recent snapshot of the policy $\pi_{\text{old}}$, then performs multiple gradient steps on the current policy $\pi_\theta$. This is not purely on-policy (the data was not sampled by $\pi_\theta$) nor purely off-policy (PPO cannot use arbitrary historical data).
+
+PPO corrects for the distribution mismatch using an importance ratio:
+\begin{equation}
+  r_t(\theta) = \frac{\pi_\theta(a_t \mid s_t)}{\pi_{\text{old}}(a_t \mid s_t)},
+\end{equation}
+and then clips it to prevent large updates:
+\begin{equation}
+  \mathcal{L}_{\text{PPO}} = -\min\!\bigl(
+    r_t(\theta)\,\hat{A}_t,\;
+    \operatorname{clip}(r_t(\theta),\, 1{-}\epsilon,\, 1{+}\epsilon)\,\hat{A}_t
+  \bigr).
+  \label{eq:ppo-clip}
+\end{equation}
+
+The clipping enforces that $\pi_\theta$ and $\pi_{\text{old}}$ cannot diverge too much. Data from the most recent old policy is acceptable; data from a much older policy is not.
+
+\begin{keyidea}[Near On-Policy = Bounded Staleness]
+PPO allows limited reuse of recent data, but constrains distribution shift through ratio clipping. It is neither on-policy (data is slightly stale) nor off-policy (it cannot use arbitrary historical data). The precise term is \emph{near on-policy}.
+\end{keyidea}
+
+TRPO follows the same logic but enforces the constraint via a KL-divergence trust region rather than clipping.
+
+%% ----------------------------------------------------------------
+\section{Why DDPG, TD3, and SAC Are Off-Policy}
+\label{sec:offpolicy-ac}
+
+All three algorithms use a replay buffer, but the deeper reason for their off-policy nature is in their update rules.
+
+\subsection{Critic Update}
+
+The critic targets have the same structure as Q-learning---a Bellman backup that does not depend on the behavior policy:
+\begin{align}
+  y_{\text{DDPG}} &= r + \gamma\, Q_{\bar\phi}\!\bigl(s',\, \mu_{\bar\theta}(s')\bigr), \\
+  y_{\text{TD3}}  &= r + \gamma\, \min_{i=1,2} Q_{\bar\phi_i}\!\bigl(s',\, \mu_{\bar\theta}(s') + \tilde\epsilon\bigr), \\
+  y_{\text{SAC}}  &= r + \gamma\, \min_{i=1,2} Q_{\bar\phi_i}(s', \tilde{a}') - \alpha\log\pi_\theta(\tilde{a}' \mid s'),
+  \quad \tilde{a}' \sim \pi_\theta(\cdot \mid s').
+\end{align}
+
+In each case, the action $a$ stored in the replay buffer can come from any previous version of the policy. The target is constructed from target networks and does not require $a \sim \pi_\theta$.
+
+\subsection{Actor Update}
+
+The actor optimizes \emph{through} the critic:
+\begin{equation}
+  \nabla_\theta J \approx \nabla_\theta\, Q_\phi\!\bigl(s,\, \mu_\theta(s)\bigr)
+  \quad\text{(DDPG/TD3)},
+  \qquad
+  \nabla_\theta\, \mathbb{E}_{a\sim\pi_\theta}\!\bigl[Q_\phi(s,a) - \alpha\log\pi_\theta(a \mid s)\bigr]
+  \quad\text{(SAC)}.
+\end{equation}
+The states $s$ are drawn from the replay buffer, but the actions used in the gradient are freshly computed by the current actor/policy. The actor does not need the stored action to match $\pi_\theta$---it generates its own actions at update time.
+
+%% ----------------------------------------------------------------
+\section{Quick Reference Table}
+\label{sec:reference-table}
+
+\begin{center}
+\begin{tabular}{@{} l l l l @{}}
+\toprule
+\textbf{Algorithm} & \textbf{Data source} & \textbf{Requires $a \sim \pi_\theta$?} & \textbf{Verdict} \\
+\midrule
+REINFORCE   & Current policy       & Yes          & On-policy \\
+A2C / A3C   & Current policy       & Yes          & On-policy \\
+PPO         & Recent old policy    & Approximately & Near on-policy \\
+TRPO        & Recent old policy    & Approximately & Near on-policy \\
+Q-learning  & Any behavior policy  & No           & Off-policy \\
+DQN         & Replay buffer        & No           & Off-policy \\
+Double DQN  & Replay buffer        & No           & Off-policy \\
+DDPG        & Replay buffer        & No           & Off-policy \\
+TD3         & Replay buffer        & No           & Off-policy \\
+SAC         & Replay buffer        & No           & Off-policy \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%% ----------------------------------------------------------------
+\section{Data Efficiency: Theory vs.\ Engineering}
+\label{sec:data-efficiency}
+
+\subsection{Theoretical Sample Efficiency}
+
+Off-policy methods can replay each transition many times, giving them a clear theoretical advantage in sample efficiency. A single $(s, a, r, s')$ tuple collected months ago can still contribute to today's gradient update.
+
+On-policy methods discard data after each policy update. Once $\pi_\theta$ changes, old trajectories no longer provide unbiased gradient estimates, so the data must be thrown away.
+
+\subsection{Engineering Efficiency Is a Different Story}
+
+In practice, raw sample efficiency is only one factor:
+
+\begin{center}
+\begin{tabular}{@{} l p{5.5cm} p{5.5cm} @{}}
+\toprule
+\textbf{Factor} & \textbf{PPO (near on-policy)} & \textbf{SAC (off-policy)} \\
+\midrule
+Sample efficiency & Lower---data discarded after a few epochs & Higher---replay buffer reused extensively \\
+Training stability & Very stable; robust to hyperparameters & Can diverge if Q-estimates blow up \\
+Hyperparameter tuning & Easy; few sensitive knobs & Harder; temperature $\alpha$, replay ratio, critic architecture matter \\
+Parallelism & Excellent; scales to thousands of workers & Moderate; replay buffer is a bottleneck \\
+Reproducibility & High & Lower; sensitive to seeds and ordering \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keyidea}[Theoretical $\neq$ Engineering Efficiency]
+Theoretical sample efficiency measures how many times each transition can be reused by the optimizer. Engineering efficiency measures whether, given the same engineering effort, you can stably obtain a good policy. PPO wastes samples but is easy to make work. SAC reuses samples but demands more careful tuning. If the off-policy critic diverges, reusing a million transitions is worthless.
+\end{keyidea}
+
+This is why PPO dominates in RLHF, large-scale simulation, and robotics despite its lower theoretical sample efficiency: stability and parallelizability often matter more than per-sample reuse.
+
+%% ----------------------------------------------------------------
+\section{The Compressed Decision Rule}
+\label{sec:compressed-rule}
+
+The entire on/off-policy distinction compresses to:
+
+\begin{quote}
+If the update formula requires the sample actions to be drawn from the current policy, the algorithm is \textbf{on-policy}. If it can use any historical actions as long as $(s, a, r, s')$ is available, it is \textbf{off-policy}. If it can use actions from a recent old policy but must constrain the divergence between old and new, it is \textbf{near on-policy}.
+\end{quote}
+
+The underlying question is always the same: \emph{is the action distribution in the historical data allowed to differ from the distribution of the policy currently being optimized?}

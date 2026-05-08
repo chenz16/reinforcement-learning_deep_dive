@@ -1,0 +1,219 @@
+\chapter{Q as Value Compression, Policy as Preference Compression}
+\label{ch:compression}
+
+Most treatments of RL describe the Q function and the policy as two different
+``things to learn.''  This chapter offers a more illuminating framing: both are
+\textbf{compressors}, but they compress different objects.  Understanding what
+each one compresses---and how the compressed representations connect---explains
+why algorithms are structured the way they are and why the field moved from
+value-first methods to policy-first methods.
+
+
+%% ================================================================
+\section{Q: Compressing Sparse Rewards into Dense Value}
+\label{sec:q-compression}
+
+Consider a typical RL environment.  The agent receives a reward of $+1$ only
+when it reaches a distant goal; every other timestep yields $r=0$.  Raw rewards
+are \emph{sparse}---they carry almost no per-step information.
+
+The Q function compresses the entire future into a single scalar:
+\begin{equation}
+  Q(s,a) = \mathbb{E}\!\left[\sum_{k=0}^{\infty}\gamma^k\, r_{t+k}
+  \;\Big|\; s_t = s,\; a_t = a\right].
+\end{equation}
+
+This is a lossy compression.  The full distribution of possible futures---all
+the branching trajectories, stochastic transitions, and delayed rewards---is
+collapsed into one number.  But it is an extraordinarily useful compression:
+it tells you, at every state--action pair, how much long-term value to expect.
+
+\begin{keyidea}[Q as Value Compressor]
+The Q function compresses sparse rewards and complex future rollouts into a
+dense, per-step scalar signal.  It transforms a credit-assignment problem
+(``which past action caused this delayed reward?'') into a local lookup
+(``what is this action worth right here?'').
+\end{keyidea}
+
+
+%% ================================================================
+\section{Policy: Compressing Behavioral Preferences}
+\label{sec:policy-compression}
+
+The policy is also a compressor, but its target is different.  Rather than
+compressing \emph{value}, it compresses \emph{preference}---the agent's
+behavioral tendency in each state.
+
+A stochastic policy $\pi(a|s)$ represents preferences as a probability
+distribution.  A deterministic policy $\mu(s)$ represents preferences as a
+single point.  Both are compressed summaries of ``how I prefer to act here,''
+distilled from experience.
+
+\begin{keyidea}[Policy as Preference Compressor]
+The policy compresses the agent's accumulated behavioral preferences into a
+compact representation---a distribution $\pi(a|s)$ or a point $\mu(s)$---that
+can be evaluated in a single forward pass.
+\end{keyidea}
+
+
+%% ================================================================
+\section{Two Compression Strategies}
+\label{sec:two-strategies}
+
+The distinction between value compression and preference compression maps
+directly onto the two major families of RL algorithms.
+
+\subsection{Value-First: Compress Value, Then Extract Preference}
+
+Q-learning and DQN follow a two-stage strategy:
+\begin{enumerate}[nosep]
+  \item \textbf{Compress value}: learn $Q(s,a)$ for all actions.
+  \item \textbf{Extract preference}: apply $\operatorname{argmax}$ to convert
+    the value landscape into a behavioral choice.
+\end{enumerate}
+
+\begin{equation}
+  \underbrace{\text{Sparse rewards} \;\longrightarrow\; Q(s,a)}_{\text{value compression}}
+  \;\longrightarrow\;
+  \underbrace{a^{\ast} = \operatorname{argmax}_a Q(s,a)}_{\text{preference extraction}}
+\end{equation}
+
+The advantage is that $Q$ can be learned from off-policy data with high sample
+efficiency.  The disadvantage is that the second stage---argmax---is a fragile
+bridge between value and preference (Section~\ref{sec:fragile-argmax}).
+
+\subsection{Policy-First: Compress Preference Directly}
+
+Policy gradient methods skip the value-compression stage (or use it only as an
+auxiliary signal) and directly optimize the preference representation:
+\begin{equation}
+  \underbrace{\text{Sampled returns / advantages}
+  \;\longrightarrow\; \pi_\theta(a|s)}_{\text{preference compression}}
+\end{equation}
+
+The advantage is robustness: there is no brittle argmax step.  The disadvantage
+is data hunger---on-policy methods must discard data whenever the policy
+changes, and the gradient signal from sampled returns is noisy.
+
+\subsection{Actor-Critic: Value Compressor Guides Preference Compressor}
+
+Actor-Critic architectures maintain \emph{both} compressors simultaneously:
+\begin{itemize}[nosep]
+  \item The \textbf{critic} compresses value (or advantage).
+  \item The \textbf{actor} compresses preference.
+  \item The critic's compressed value signal \emph{guides} the actor's
+    preference updates.
+\end{itemize}
+
+\begin{equation}
+  \underbrace{Q_\phi(s,a) \text{ or } A_\phi(s,a)}_{\text{value compressor (critic)}}
+  \;\xrightarrow{\text{guides}}\;
+  \underbrace{\pi_\theta(a|s)}_{\text{preference compressor (actor)}}
+\end{equation}
+
+This is not simply ``one network scores, another network acts.''  It is a
+cooperative compression scheme in which the value compressor provides a
+low-variance training signal that accelerates the preference compressor's
+learning.
+
+The risk is mutual contamination: if the critic's value compression is poor
+(overestimation, dead regions), it corrupts the actor's preference compression.
+This is why Actor-Critic methods need careful stabilization---target networks,
+double critics, entropy bonuses---to keep both compressors healthy.
+
+
+%% ================================================================
+\section{Why Hard Argmax Is a Fragile Bridge}
+\label{sec:fragile-argmax}
+
+The argmax operation is the standard way to convert a Q-value landscape into a
+decision:
+\begin{equation}
+  a^{\ast} = \operatorname{argmax}_a Q(s,a).
+\end{equation}
+
+In theory, if $Q = Q^{\ast}$, this recovers the optimal policy.  In practice,
+$Q$ is an approximation with noise, and argmax has two pathological properties:
+
+\begin{enumerate}
+  \item \textbf{Discontinuity.}  Argmax is a discontinuous function of $Q$.  A
+    tiny perturbation in Q-values can flip the selected action entirely.  This
+    means that small estimation errors produce large behavioral changes.
+  \item \textbf{Noise amplification.}  Among $k$ noisy estimates, argmax
+    preferentially selects the one with the largest positive noise.  This is the
+    overestimation bias discussed in Chapter~\ref{ch:bias-management}, but seen
+    here as a \emph{compression failure}: the value compressor's noise is
+    amplified at the value-to-preference interface.
+\end{enumerate}
+
+A soft policy $\pi(a|s) \propto \exp(Q(s,a)/\alpha)$ replaces the hard argmax
+with a smooth, temperature-controlled mapping.  Small errors in $Q$ produce
+small changes in the distribution, not discontinuous action switches.  This is
+one of the deepest reasons the field moved toward stochastic, soft policies.
+
+\begin{keyidea}[Argmax as Compression Bottleneck]
+Hard argmax is a fragile bridge between value compression and preference
+compression.  It amplifies noise and is discontinuous.  Soft policies replace
+this brittle interface with a smooth, differentiable mapping---making the
+overall compression pipeline more robust.
+\end{keyidea}
+
+
+%% ================================================================
+\section{Algorithm Comparison Through the Compression Lens}
+\label{sec:compression-table}
+
+Table~\ref{tab:compression} summarizes major algorithms in terms of what they
+compress, how they make decisions, and what can go wrong.
+
+\begin{table}[ht]
+\centering
+\caption{Algorithms viewed as compression systems.}
+\label{tab:compression}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Algorithm} & \textbf{Compression object} &
+\textbf{Decision method} & \textbf{Core risk} \\
+\midrule
+Q-learning / DQN &
+  Long-term value $Q$ &
+  Hard argmax &
+  Q noise amplified by argmax \\
+Double DQN / TD3 &
+  Value (stabilized) &
+  Conservative argmax &
+  Underestimation; slower learning \\
+Policy Gradient &
+  Preference $\pi$ directly &
+  Sample from $\pi$ &
+  High variance; data hungry \\
+PPO &
+  Preference $\pi$ (stabilized) &
+  Clipped update of $\pi$ &
+  May be overly conservative \\
+SAC &
+  Soft preference &
+  Sample from entropy-regularized $\pi$ &
+  Objective rewritten by entropy \\
+Actor-Critic &
+  $Q/A$ (value) + $\pi$ (preference) &
+  Critic guides actor &
+  Compressors can contaminate each other \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+%% ================================================================
+\section{The Compression Perspective in One Sentence}
+\label{sec:compression-summary}
+
+\begin{keyidea}[The Compression View of RL]
+$Q$ is the compression of sparse rewards and long-term value into a dense
+scalar.  $\pi$ is the compression of behavioral preferences into a
+distribution.  The history of RL algorithm design is the story of learning how
+to build, connect, and stabilize these two compressors---and of discovering
+that directly compressing preferences is often more robust than compressing
+value first and then extracting preferences through the fragile bottleneck of
+argmax.
+\end{keyidea}

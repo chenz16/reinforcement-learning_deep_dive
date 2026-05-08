@@ -1,0 +1,501 @@
+\chapter{From Bellman to Preference Learning: The Grand Arc}
+\label{ch:grand-arc}
+
+This chapter tells a single story.
+It begins in 1957 with Richard Bellman's dynamic programming and ends in 2025 with DeepSeek's GRPO---a method in which the Bellman equation appears nowhere.
+Along the way, we trace nine stages of evolution and identify the forces that drove each transition.
+
+The thesis in one sentence:
+
+\begin{keyidea}[The Grand Arc]
+Classical DP solves for the global optimum under a known model.
+Modern RL learns a good-enough, stable, preference-aligned policy under limited sampling, noise, bias, and distributional uncertainty.
+These two objectives differ in nature: the former is god's-eye analytical optimization; the latter is statistical preference learning.
+\end{keyidea}
+
+% ===========================================================
+\section{Stage 1: The Bellman Equation---Correct, but Ideal}
+\label{sec:stage1-dp}
+% ===========================================================
+
+In 1957, Richard Bellman introduced dynamic programming and the principle of optimality.
+In a deterministic, fully known environment with transition model $P(s'|s,a)$ and reward $r(s,a)$, the Bellman equation is both necessary and sufficient.
+
+For a given policy $\pi$:
+\begin{equation}
+V^{\pi}(s) = \mathbb{E}_{a \sim \pi,\, s' \sim P}\bigl[r(s,a) + \gamma\, V^{\pi}(s')\bigr].
+\end{equation}
+For optimal control:
+\begin{equation}
+V^{\ast}(s) = \max_a\, \mathbb{E}_{s' \sim P}\bigl[r(s,a) + \gamma\, V^{\ast}(s')\bigr].
+\end{equation}
+Or in Q-function form:
+\begin{equation}
+\label{eq:bellman-q}
+Q^{\ast}(s,a) = \mathbb{E}_{s' \sim P}\bigl[r(s,a) + \gamma\, \max_{a'} Q^{\ast}(s',a')\bigr].
+\end{equation}
+
+These equations are mathematically rigorous.
+The Bellman equation \emph{is} the entire optimization---solving it yields the globally optimal policy.
+The problem is not that the Bellman principle is wrong, but that it describes an \textbf{ideal fixed point}, while the training process is not a fixed point.
+
+% ===========================================================
+\section{Stage 2: Stochastic DP and MDPs (1960)}
+\label{sec:stage2-mdp}
+% ===========================================================
+
+Ronald Howard extended Bellman's framework to stochastic environments (Markov Decision Processes) and introduced Policy Iteration and Value Iteration.
+The essence did not change---still finding the Bellman equation's fixed point under a known model---but transition probability uncertainty was now accommodated.
+
+The Bellman evaluation equation becomes:
+\begin{equation}
+V^{\pi}(s) = \sum_a \pi(a|s) \sum_{s'} P(s'|s,a)\bigl[r(s,a) + \gamma\, V^{\pi}(s')\bigr].
+\end{equation}
+
+This operator is fundamentally \emph{averaging}: it sums over actions weighted by the policy and over next states weighted by transition probabilities.
+Averaging is smooth, stable, and easy to prove contraction for.
+This stability is why V-functions were developed first.
+
+% ===========================================================
+\section{Stage 3: TD Learning---From Known Models to Sampling (1988)}
+\label{sec:stage3-td}
+% ===========================================================
+
+Sutton's Temporal Difference (TD) learning was the first major departure from the god's-eye view.
+The key move: replace exact expectations with sampled estimates.
+
+\begin{equation}
+V(s) \leftarrow V(s) + \alpha\bigl[r + \gamma\, V(s') - V(s)\bigr].
+\end{equation}
+
+No model is needed---only the ability to observe transitions $(s, a, r, s')$.
+V-functions were the natural starting point because they average over action outcomes, yielding low-variance, stable updates.
+
+The cost: V cannot directly tell you which action to take.
+To extract a policy from $V$, you need the transition model $P(s'|s,a)$---precisely what you no longer have.
+
+% ===========================================================
+\section{Stage 4: Q-Learning---Making Action Optimization Explicit (1989)}
+\label{sec:stage4-q}
+% ===========================================================
+
+Watkins' Q-learning solved the action-selection problem by shifting the learning target from $V(s)$ to $Q(s,a)$:
+\begin{equation}
+Q(s,a) \leftarrow r + \gamma\,\max_{a'} Q(s',a').
+\end{equation}
+
+Policy improvement becomes trivial: $a^{\ast} = \arg\max_a Q(s,a)$.
+No environment model needed.
+Q-learning is also \textbf{off-policy}---the update assumes the future will choose optimally regardless of what the behavior policy actually did.
+This makes it data-efficient: a high-value signal can propagate rapidly.
+
+\subsection{The Cost of $\max$}
+
+But the $\max$ operator is an unbridled horse.
+During training, Q is a noisy estimate: $\hat{Q} = Q^{\ast} + \epsilon$.
+Therefore:
+\begin{equation}
+\max_a \hat{Q}(s,a) = \max_a \bigl[Q^{\ast}(s,a) + \epsilon(s,a)\bigr].
+\end{equation}
+The $\max$ preferentially selects the action with the largest positive noise.
+This creates a feedback loop:
+\begin{enumerate}
+    \item An action is overestimated due to noise.
+    \item $\max$ selects it for the Bellman target.
+    \item The inflated target is written back into the Q-network.
+    \item Future updates propagate the overestimation further.
+\end{enumerate}
+
+\begin{keyidea}[The Core Tension]
+\textbf{Averaging} (V-style) is stable but conservative---it does not amplify the best action.
+\textbf{Max} (Q-style) is data-efficient but aggressive---it amplifies estimation noise.
+The entire history of RL oscillates between these two poles.
+\end{keyidea}
+
+\begin{table}[ht]
+\centering
+\caption{The averaging--max tension.}
+\label{tab:avg-vs-max}
+\begin{tabular}{lll}
+\toprule
+\textbf{Approach} & \textbf{Strengths} & \textbf{Weaknesses} \\
+\midrule
+Averaging / expectation & Stable, smooth, low variance & Slow learning, weak optimization \\
+Max / greedy & Data-efficient, fast propagation & Overestimation, instability \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ===========================================================
+\section{Stage 5: DQN---Taming Qmax with Deep Networks (2013--2016)}
+\label{sec:stage5-dqn}
+% ===========================================================
+
+DQN did not invent Q-learning.
+Its true significance is the first reasonably stable combination of deep neural networks with off-policy Q-learning.
+The Bellman target remained unchanged:
+$y = r + \gamma\,\max_{a'} Q_{\bar\theta}(s',a')$.
+DQN tamed the $\max$ operator through engineering:
+
+\begin{enumerate}
+    \item \textbf{CNN encoder}: map high-dimensional pixel states to features.
+    \item \textbf{Replay buffer}: break temporal correlation, improve data reuse.
+    \item \textbf{Target network} $\bar\theta$: prevent the target from chasing itself, reducing bootstrap instability.
+    \item \textbf{Off-policy learning}: reuse past data to train the current value function.
+\end{enumerate}
+
+\subsection{Subsequent Repairs}
+
+DQN exposed the $\max$ operator's weaknesses at scale.
+Two key follow-ups:
+
+\textbf{Double DQN} decouples action selection from evaluation:
+\begin{equation}
+a^{\ast} = \arg\max_a Q_\theta(s',a), \qquad
+y = r + \gamma\, Q_{\bar\theta}(s', a^{\ast}).
+\end{equation}
+The online network selects; the target network evaluates.
+This reduces the noise amplification from using the same noisy Q for both roles.
+
+\textbf{Dueling DQN} decomposes the Q-function structurally:
+\begin{equation}
+Q(s,a) = V(s) + A(s,a),
+\end{equation}
+where $V(s)$ captures overall state value and $A(s,a)$ captures the relative advantage of each action.
+By isolating the state-value component, estimation becomes more stable.
+
+\begin{keyidea}[DQN's Legacy]
+The DQN family retains Qmax's aggressive optimization but puts reins on it.
+The Bellman equation is still the primary objective---but it now requires heavy engineering stabilization.
+\end{keyidea}
+
+% ===========================================================
+\section{Stage 6: Policy Gradient---The Philosophical Watershed}
+\label{sec:stage6-pg}
+% ===========================================================
+
+Q-learning is fundamentally \textbf{value-centric}: it posits an objectively optimal $Q^{\ast}(s,a)$ and approaches it through Bellman consistency.
+Policy Gradient (Williams 1992; Sutton et al.\ 1999) is entirely different.
+It directly optimizes the policy $\pi_\theta(a|s)$.
+
+The objective:
+\begin{equation}
+J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\bigl[R(\tau)\bigr].
+\end{equation}
+The gradient (via the likelihood ratio trick):
+\begin{equation}
+\label{eq:pg}
+\nabla_\theta J(\theta) = \mathbb{E}\Bigl[\nabla_\theta \log \pi_\theta(a|s)\, A(s,a)\Bigr].
+\end{equation}
+
+The meaning is intuitive: if an action's advantage is positive, increase its probability; if negative, decrease it.
+This is not hard $\max$---it is \textbf{probability reshaping}.
+
+\subsection{Two Layers of Probability}
+
+The statistical essence of policy gradient can be understood through two layers:
+\begin{enumerate}
+    \item \textbf{Rollout probability}: which actions get sampled depends on $\pi_\theta(a|s)$.
+    \item \textbf{Update weighting}: sampled actions are re-weighted by advantage $A(s,a)$.
+\end{enumerate}
+Policy gradient does not simply copy sampled behaviors.
+Within the actual sampling distribution, it re-weights behaviors by reward as preferences---closely mirroring statistical estimation.
+
+\subsection{A Change of Objective}
+
+The shift from Q-learning to policy gradient is not merely algorithmic---the optimization objective changes.
+
+Q-learning's Bellman loss is a \textbf{consistency loss}:
+\begin{equation}
+\mathcal{L}_Q = \bigl(Q(s,a) - r - \gamma\,\max_{a'} Q(s',a')\bigr)^2.
+\end{equation}
+It pursues value-function self-consistency---fitting ``true'' values.
+
+Policy gradient's loss is \textbf{behavior distribution shaping}:
+\begin{equation}
+\mathcal{L}_\pi = -\log \pi(a|s)\, A(s,a).
+\end{equation}
+It pursues increasing good-behavior probabilities and decreasing bad ones.
+
+\begin{keyidea}[The Watershed]
+Q-learning says: ``The action with the highest estimated value should be selected.''
+Policy gradient says: ``Behaviors that perform statistically better should occur more frequently.''
+This is the turn from god's-eye value solving to sampling-based behavioral preference shaping.
+\end{keyidea}
+
+\subsection{Policy Gradient as Weighted Maximum Likelihood}
+
+The connection to statistics is precise.
+Ordinary maximum likelihood (behavior cloning) maximizes $\sum_i \log \pi_\theta(a_i|s_i)$---every observed action is reinforced equally.
+Policy gradient maximizes a \emph{weighted} log-likelihood:
+\begin{equation}
+\sum_i A(s_i, a_i)\,\log \pi_\theta(a_i|s_i).
+\end{equation}
+MLE models behavioral frequency; policy gradient models behavioral frequency with preference weights.
+
+% ===========================================================
+\section{Stage 7: Actor-Critic and the PPO/SAC Era (2015--2018)}
+\label{sec:stage7-ac}
+% ===========================================================
+
+Policy gradient needs advantage estimates.
+Actor-Critic methods maintain both a policy (actor) and a value function (critic):
+
+\begin{table}[ht]
+\centering
+\caption{Critic variants in Actor-Critic architectures.}
+\label{tab:critic-types}
+\begin{tabular}{lll}
+\toprule
+\textbf{Critic Type} & \textbf{What It Learns} & \textbf{Typical Algorithms} \\
+\midrule
+V-critic    & $V(s)$    & A2C, A3C, PPO \\
+Q-critic    & $Q(s,a)$  & DDPG, TD3, SAC \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+PPO-style methods use a V-critic to estimate advantage via TD residuals or GAE:
+\begin{equation}
+\hat{A}_t \approx r_t + \gamma\, V(s_{t+1}) - V(s_t).
+\end{equation}
+The critic here is a statistical control variate---not an attempt to find a globally optimal $Q^{\ast}$.
+
+\subsection{The Key Turn: Policy Becomes Primary}
+
+TRPO, PPO, and SAC marked a fundamental shift.
+The optimization objective is no longer Bellman consistency but:
+\begin{equation}
+\max_\theta\; \mathbb{E}_{\pi_\theta}\bigl[R(\tau)\bigr].
+\end{equation}
+The Bellman equation is \emph{demoted to an auxiliary role}---the critic uses it to estimate advantage, but it is no longer the primary optimization formula.
+
+\subsection{Greedy with Brakes}
+
+Modern methods can be understood as \textbf{greedy optimization with brakes}:
+
+\begin{itemize}
+    \item \textbf{Why greedy?}  Data is scarce.  Without greedy amplification, high-reward signals propagate too slowly.
+    \item \textbf{Why brakes?}  Greedy amplifies noise, bias, and function approximation error.
+\end{itemize}
+
+\begin{table}[ht]
+\centering
+\caption{How modern algorithms balance greediness and stability.}
+\label{tab:brakes}
+\begin{tabular}{ll}
+\toprule
+\textbf{Algorithm / Technique} & \textbf{Essential Function} \\
+\midrule
+PPO clipping              & Limit overly aggressive policy updates \\
+TRPO / KL constraint      & Trust region prevents policy jumps \\
+Entropy regularization    & Prevent premature deterministic collapse \\
+TD3 clipped double Q      & Conservative estimates suppress overestimation \\
+SAC                       & Soft greedy + entropy + Q-critic \\
+Target network            & Reduce bootstrap target drift \\
+Double Q                  & Reduce $\max$ overestimation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The shared principle: \emph{do not abandon optimization, but prevent the optimizer from exploiting estimation noise.}
+
+\subsection{V-Only as a Relaxation of Qmax}
+
+PPO replaces hard $\arg\max$ with soft advantage-weighted updates:
+\begin{align}
+\text{Q-learning:} \quad & a^{\ast} = \arg\max_a Q(s,a), \\
+\text{PPO:} \quad & \nabla_\theta \log \pi_\theta(a|s)\, A(s,a).
+\end{align}
+The former is hard optimization; the latter is soft preference adjustment.
+PPO is more stable but not ``more globally optimal.''
+What it pursues is: stably pushing the policy toward better directions under limited sampling.
+
+% ===========================================================
+\section{Stage 8: RLHF---Preferences Replace Engineered Rewards (2017--2022)}
+\label{sec:stage8-rlhf}
+% ===========================================================
+
+Christiano et al.\ (2017) proposed learning a reward model from human preference comparisons.
+Ouyang et al.\ (2022, InstructGPT) applied it at scale to LLMs.
+
+The shift: reward is no longer a hand-designed function but is \emph{sampled from human preferences}---noisy, contextual, local, sometimes contradictory.
+Forcing a globally consistent Bellman-optimal $Q^{\ast}$ onto such preferences may itself be a fiction.
+
+However, RLHF's policy training still used PPO internally.
+PPO's critic still relied on the Bellman equation for value estimation.
+Preferences changed the \emph{source} of reward, but the Bellman equation had not yet fully exited the optimization mechanism.
+
+% ===========================================================
+\section{Stage 9: DPO and GRPO---The Bellman Equation Disappears (2023--2025)}
+\label{sec:stage9-dpo}
+% ===========================================================
+
+This is the most dramatic rupture in the entire arc.
+
+\textbf{DPO} (Rafailov et al., 2023) directly optimizes the policy on preference pairs, eliminating the reward model and the RL training loop entirely.
+No critic, no value network, no Bellman bootstrap.
+
+\textbf{GRPO} (DeepSeek, 2025) goes further: for each prompt, generate a group of responses and use within-group relative ranking as the baseline to replace the critic.
+It is pure policy gradient plus statistical preference re-weighting.
+
+\begin{keyidea}[The Complete Break]
+In DPO/GRPO there is:
+\begin{itemize}
+    \item No value network ($V$ or $Q$).
+    \item No Bellman consistency loss.
+    \item No bootstrap target.
+\end{itemize}
+The optimization objective is pure preference distribution shaping.
+The Bellman equation is completely gone.
+\end{keyidea}
+
+This is not regression---it is the inevitable endpoint of a trend.
+In a world where human preferences are inherently noisy, contextual, and ad-hoc, maintaining a globally consistent Bellman fixed point is neither necessary nor natural.
+Statistical preference optimization is the correct response to this reality.
+
+% ===========================================================
+\section{The Diminishing Role of the Bellman Equation}
+\label{sec:bellman-role}
+% ===========================================================
+
+The entire nine-stage evolution can be summarized by tracking a single variable: \emph{how central is the Bellman equation to the optimization?}
+
+\begin{table}[ht]
+\centering
+\caption{The Bellman equation's role at each stage.}
+\label{tab:bellman-role}
+\begin{tabular}{lll}
+\toprule
+\textbf{Stage} & \textbf{Era} & \textbf{Bellman's Role} \\
+\midrule
+1--4. DP / Q-learning       & 1957--1989 & The entire optimization \\
+5. DQN family               & 2013--2016 & The entire optimization (+ stability tricks) \\
+6. Early Actor-Critic       & $\sim$2000 & Primary objective (policy is a means) \\
+7. PPO / SAC                & 2015--2018 & Auxiliary tool (critic uses it for advantage) \\
+8. RLHF                     & 2017--2022 & Residual (inside PPO's critic) \\
+9. DPO / GRPO               & 2023--2025 & Completely absent \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ===========================================================
+\section{The $\arg\max$ Distinction: Conclusion vs.\ Process}
+\label{sec:argmax-distinction}
+% ===========================================================
+
+A subtle but critical point underlies the entire arc.
+
+In Bellman optimality, $\arg\max$ is a \textbf{conclusion}:
+\emph{if} you already know the true $Q^{\ast}$, \emph{then} choosing $\arg\max Q^{\ast}$ is correct.
+
+During training, $\arg\max$ becomes the \textbf{process} at every step:
+even though $Q$ is noisy, you forcefully select the current maximum.
+
+These are completely different operations.
+An analogy: Bellman optimality's $\arg\max$ is knowing that daily exercise is good \emph{when you are already fit}.
+Hard greedy during training is attempting maximum-intensity exercise every day \emph{when your body is in poor condition}---overshooting, injury, collapse.
+
+Modern RL makes the optimization ``softer'':
+\begin{itemize}
+    \item PPO uses clipping to prevent the policy from changing too much in one step.
+    \item SAC uses entropy to prevent premature collapse.
+    \item Double Q / TD3 uses conservative estimates to suppress overestimation.
+    \item RLHF uses KL regularization to stay close to the reference policy.
+\end{itemize}
+
+None of these deny optimality.
+They acknowledge that under limited data, you cannot treat theoretical optimality conditions as hard execution rules at every training step.
+
+% ===========================================================
+\section{From God's-Eye View to Statistical View}
+\label{sec:god-to-stat}
+% ===========================================================
+
+Classical DP adopts a god's-eye view: there exists a true model, true transition probabilities, a true reward function, and true optimal $Q^{\ast}$, $V^{\ast}$.
+The algorithm's task is to compute these true values.
+
+The statistical view is different.
+There is no directly observable truth---only samples, assumptions, likelihoods, and estimators.
+Maximum likelihood estimation does not seek cosmic truth; it asks:
+\emph{what parameters best explain the current observed data?}
+
+As RL has evolved, it has increasingly adopted this statistical worldview:
+\begin{itemize}
+    \item Policy gradient, RLHF, and GRPO do not insist on a globally consistent $Q^{\ast}$.
+    \item They care about: which behaviors brought better rewards in sampling statistics, and therefore should occur more frequently.
+\end{itemize}
+
+This is the shift from ``finding true values'' to ``shaping behavioral distributions.''
+
+\begin{keyidea}[Two Worldviews]
+DP is exact optimization under a known model---\textbf{analytical optimal control}.\\
+Modern RL is recursive preference optimization under noise, bias, and distribution drift---\textbf{statistical preference learning}.
+\end{keyidea}
+
+% ===========================================================
+\section{The Six Phases at a Glance}
+\label{sec:six-phases}
+% ===========================================================
+
+The nine stages cluster naturally into six conceptual phases.
+
+\subsection*{Phase 1: DP / V-Function}
+\emph{Goal}: stable evaluation and globally optimal solving under known models.\\
+\emph{Character}: exact expectations, clean Bellman fixed point, stable V-function.\\
+\emph{Limitation}: action optimization is not direct.
+
+\subsection*{Phase 2: Q-Learning / Qmax}
+\emph{Goal}: explicit action optimization without a model.\\
+\emph{Character}: high data efficiency, off-policy, fast greedy propagation.\\
+\emph{Limitation}: severe overestimation, instability.
+
+\subsection*{Phase 3: DQN Family}
+\emph{Goal}: scale Q-learning with deep networks.\\
+\emph{Character}: still value-centric, still Bellman-centered, but with heavy engineering stabilization.\\
+\emph{Limitation}: $\max$ bias persists despite repairs.
+
+\subsection*{Phase 4: Policy Gradient / Actor-Critic}
+\emph{Goal}: directly optimize the policy distribution.\\
+\emph{Character}: shift from value-centric to behavior-centric; no longer insisting on perfect Q.\\
+\emph{Limitation}: high variance, lower data efficiency.
+
+\subsection*{Phase 5: PPO / SAC / TD3}
+\emph{Goal}: fuse value and policy, balance greediness and stability.\\
+\emph{Character}: constrained/regularized policy updates; the Bellman equation becomes auxiliary.\\
+\emph{Limitation}: still requires careful hyperparameter tuning.
+
+\subsection*{Phase 6: RLHF / DPO / GRPO}
+\emph{Goal}: align with human preferences.\\
+\emph{Character}: reward from preferences (not engineering); algorithms resemble statistical preference learning.\\
+\emph{Essence}: the goal is not absolute optimality, but placing the behavioral distribution within the zone of human preferences.
+
+% ===========================================================
+\section{Chapter Summary}
+\label{sec:ch2-summary}
+% ===========================================================
+
+Ten points compress the grand arc:
+
+\begin{enumerate}
+    \item DP is exact optimization under known models; RL is sampling-based optimization under unknown models.
+    \item The Bellman equation describes an ideal fixed point; the training process is noisy nonlinear recursive iteration.
+    \item V is stable but conservative; Q enables explicit action optimization but more easily amplifies errors.
+    \item $\max$ is data-efficient because it rapidly propagates high values---but it also preferentially selects positive noise.
+    \item Modern RL's core is not pursuing global optimality, but learning stable, useful, statistically superior policies under limited data.
+    \item Policy Gradient is the watershed: from finding the optimal value function to directly shaping behavior distributions.
+    \item Actor-Critic fuses value estimation and policy optimization---not simply ``using Q'' or ``not using Q.''
+    \item PPO / SAC / TD3 are greedy optimization with brakes.
+    \item RLHF / GRPO demonstrate that real-world preferences are inherently ad-hoc and statistical---not suited for a globally Bellman-consistent value function.
+    \item Modern RL more closely resembles statistical preference learning than classical analytical optimal control.
+\end{enumerate}
+
+The entire thread in one powerful statement:
+
+\begin{keyidea}[The Essence]
+DP pursues the global optimal solution.
+RL pursues evolving good-enough behavioral preferences from limited, noisy, biased data.
+The field's history oscillates between ``too much averaging---can't learn'' and ``too much greediness---collapses.''
+The answer is not choosing one side, but:
+use greediness to amplify effective signals; use statistical constraints and regularization to prevent the system from being carried away by noise.
+\end{keyidea}
