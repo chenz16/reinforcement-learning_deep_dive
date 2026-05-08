@@ -1349,7 +1349,75 @@ One forward pass outputs the action
 → RL model = compressed representation of offline experience, for fast online decisions
 ```
 
-### 10.4 Unified View: Different Engineering Trade-offs for the Same Problem
+### 10.4 The Hidden Strong Constraints of Optimal Control
+
+Optimal Control looks elegant, but it works because it makes very strong assumptions about the problem. These assumptions easily break down in complex scenarios:
+
+**Constraint 1: Requires explicit reference and analytically tractable constraints**
+
+```text
+MPC / LQR etc. typically require:
+  - An explicit reference trajectory
+  - Constraints expressed as linear or convex constraints:
+      A·x ≤ b         (linear inequality constraints)
+      x_min ≤ x ≤ x_max   (state/input bounds)
+  - Cost function is usually quadratic:
+      J = Σ (x - x_ref)^T Q (x - x_ref) + u^T R u
+
+If constraints are nonlinear, non-convex, or reference is hard to define
+→ The problem becomes very hard to solve, or even intractable
+```
+
+RL needs none of this: no explicit reference, no constraint form requirements, reward can be any computable scalar.
+
+**Constraint 2: Degrees of freedom cannot be too high**
+
+```text
+Optimal Control's online solving complexity grows steeply with DOF:
+  - State dimension n, control dimension m, prediction horizon T
+  - MPC optimization variables ≈ (n + m) × T
+  - QP complexity ≈ O(((n+m)T)^3)
+
+High-DOF scenarios (high-dim robots, multi-agent, pixel-level control):
+  → Online solving simply can't keep up
+  → Must drastically simplify models or reduce dimensions
+
+RL is not bound by this:
+  Offline training can take as much time as needed
+  Online inference is just one forward pass, scales linearly with dimension
+```
+
+**Constraint 3: Poor parallelizability**
+
+```text
+Optimal Control's online solving is typically serial:
+  - Each step depends on the previous step's solution
+  - MPC iterative solvers (QP solver, ADMM) are inherently sequential
+  - Very hard to leverage GPU's massive parallelism
+
+RL training is naturally parallel:
+  - Data collection: multiple environments roll out in parallel (vectorized env)
+  - Gradient computation: samples within a batch are naturally parallel (GPU matrix ops)
+  - Inference: batch inference, can process multiple inputs simultaneously
+```
+
+Summary:
+
+```text
+Optimal Control's costs:
+  ✗ Needs explicit reference + linear/convex constraints
+  ✗ Solving explodes at high DOF
+  ✗ Hard to parallelize, can't leverage GPUs well
+  ✓ But very efficient when low-dim, model is precise, constraints are well-structured
+
+RL's costs:
+  ✗ Needs massive offline training data
+  ✗ Training is unstable, hyperparameter tuning is hard
+  ✗ Not easy to do real-time online adaptation
+  ✓ But has no hard requirements on input dimension, constraint form, or model precision
+```
+
+### 10.5 Unified View: Different Engineering Trade-offs for the Same Problem
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
