@@ -511,9 +511,56 @@ Trend: treating the denoising process as a multi-step MDP for policy gradient; f
 
 ---
 
-## 4. Agent RL vs One-Round RL
+## 4. The Nature of "Environment" & Agent RL vs One-Round RL
 
-The interaction structure of RL can be divided into two modes:
+### 4.0 Understanding "Environment" First: RL's Most Overlooked Role
+
+All RL discussions revolve around policy, Q, and loss, but **the environment is RL's foundation**. Without it, there are no states, no rewards, no rollouts.
+
+The environment is not an abstract concept -- it is a concrete system that the agent's actions act upon, and it returns the next state and reward. In different scenarios, the physical form of "environment" is entirely different:
+
+```text
+┌───────────────────────────────────────────────────────────────┐
+│             What "Environment" Means in Different Scenarios    │
+├──────────────┬────────────────────────────────────────────────┤
+│  Scenario    │  What is the environment?                      │
+├──────────────┼────────────────────────────────────────────────┤
+│  Games/Sim   │  Simulator (Atari, MuJoCo, Isaac Gym)         │
+│              │  Fully controllable, resettable, parallelizable│
+│              │  Reward given directly by game rules            │
+│              │                                                │
+│  Agentic AI  │  The computer system itself ("harness")        │
+│              │  File system, terminal, network, APIs, database│
+│              │  Agent's action = execute commands/write files  │
+│              │  Env state = file contents/program output/web   │
+│              │  Reward = test pass rate/task completion/human  │
+│              │                                                │
+│  Autonomous  │  The physical world                            │
+│  Driving     │  Roads, vehicles, pedestrians, weather, signals│
+│              │  Agent's action = throttle/brake/steering       │
+│              │  Env state = sensor observations (camera/LiDAR)│
+│              │  Reward = safety/efficiency/comfort scores      │
+│              │                                                │
+│  Robotics    │  Physical world + robot body                   │
+│              │  Joints, torques, contact surfaces, gravity     │
+│              │  Agent's action = joint torques/target positions│
+│              │  Env state = joint angles/force sensors/vision  │
+│              │  Reward = task completion/energy/collision      │
+└──────────────┴────────────────────────────────────────────────┘
+```
+
+Key understanding:
+
+```text
+Simulator environments: cheap, controllable, parallelizable → large-scale RL training
+Agentic AI environments (harness): moderate cost, resettable → code/tool agent training
+Physical world environments: expensive, irreversible, safety risks → need sim2real or very careful online learning
+```
+
+The environment's nature determines the RL training strategy:
+- Environment is cheap → can do massive rollouts → on-policy methods viable (PPO)
+- Environment is expensive → must reuse data → off-policy methods more practical (SAC)
+- Environment is dangerous → train in simulation first → sim2real transfer
 
 ### 4.1 Traditional RL: Single-Round Sequential Interaction
 
