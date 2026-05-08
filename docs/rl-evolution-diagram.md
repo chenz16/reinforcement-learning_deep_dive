@@ -31,11 +31,15 @@ flowchart TD
     end
 
     subgraph ERA7["<b>⚡⚡ 关键转向：Policy 成为主导（2015-2018）</b>"]
-        G["<b>TRPO → PPO → TD3 → SAC</b><br/>Schulman 2015/2017 · Fujimoto 2018 · Haarnoja 2018<br/>─────────────────<br/>优化目标：max E_π[R(τ)]（不是 Bellman 一致性）<br/>PPO: clip ratio 限制策略变化<br/>SAC: entropy bonus 防止 policy collapse<br/>TD3: 保守 double-Q 压制高估<br/>Bellman 方程 = 辅助工具（Critic 用它估 advantage）"]
+        G["<b>TRPO → PPO → TD3 → SAC</b><br/>Schulman 2015/2017 · Fujimoto 2018 · Haarnoja 2018<br/>─────────────────<br/>优化目标：max E_π[R(τ)]（不是 Bellman 一致性）<br/>PPO: clip ratio 限制策略变化<br/>SAC: entropy bonus 防止 policy collapse<br/>TD3: 保守 double-Q 压制高估<br/>Bellman 方程 = 辅助工具（Critic 仍用它估 advantage）"]
     end
 
-    subgraph ERA8["<b>⚡⚡⚡ 范式转变：偏好学习（2017-2025）</b>"]
-        H["<b>RLHF → DPO → GRPO</b><br/>Christiano 2017 · Ouyang 2022 · Rafailov 2023 · DeepSeek 2025<br/>─────────────────<br/>Reward 来自人类偏好，非工程设计<br/>DPO: 直接在偏好对上优化，无需 reward model<br/>GRPO: 组内相对排序替代 Critic<br/>优化目标 = 偏好分布塑造<br/>Bellman 方程 ≈ 不再出现"]
+    subgraph ERA8["<b>⚡⚡⚡ 偏好驱动：RLHF（2017-2022）</b>"]
+        H["<b>RLHF / InstructGPT</b><br/>Christiano 2017 · Ouyang 2022<br/>─────────────────<br/>Reward 来自人类偏好，非工程设计<br/>但训练仍用 PPO → Critic 仍依赖 Bellman<br/>偏好决定了 reward 的来源<br/>Bellman 方程 = 残留（PPO Critic 内部仍在用）"]
+    end
+
+    subgraph ERA9["<b>✦ 彻底决裂：纯统计偏好优化（2023-2025）</b>"]
+        I["<b>DPO / GRPO</b><br/>Rafailov 2023 · DeepSeek 2025<br/>─────────────────<br/>DPO: 消除 reward model，直接偏好对优化<br/>GRPO: 消除 Critic，组内相对排序即 baseline<br/>无 Bellman 方程、无 value network、无 bootstrap<br/>纯 policy gradient + 统计偏好重加权<br/>─────────────────<br/>从 Bellman 状态方程优化 彻底转向 统计偏好优化<br/>Bellman 方程 = 彻底消失"]
     end
 
     A -->|"环境从确定变为随机<br/>但框架不变"| B
@@ -44,7 +48,8 @@ flowchart TD
     D -->|"用深度网络扩展<br/>发现 max 不稳定"| E
     E -->|"为了修 Qmax<br/>引入 policy 网络"| F
     F -->|"policy 从辅助升为主目标<br/>Bellman 降为辅助"| G
-    G -->|"reward 从工程设计<br/>变为偏好采样"| H
+    G -->|"reward 从工程设计<br/>变为人类偏好采样"| H
+    H -->|"连 Critic 也不要了<br/>纯统计偏好优化"| I
 
     style ERA1 fill:#e8f4f8,stroke:#2196F3,stroke-width:2px
     style ERA2 fill:#e8f4f8,stroke:#2196F3,stroke-width:2px
@@ -53,7 +58,8 @@ flowchart TD
     style ERA5 fill:#fff3e0,stroke:#FF9800,stroke-width:2px
     style ERA6 fill:#fff3e0,stroke:#FF9800,stroke-width:2px
     style ERA7 fill:#fce4ec,stroke:#E91E63,stroke-width:2px
-    style ERA8 fill:#f3e5f5,stroke:#9C27B0,stroke-width:3px
+    style ERA8 fill:#fce4ec,stroke:#E91E63,stroke-width:2px
+    style ERA9 fill:#f3e5f5,stroke:#9C27B0,stroke-width:3px
 ```
 
 ## Bellman 方程角色变迁一览
@@ -64,20 +70,23 @@ graph LR
         R1["<b>全部</b><br/>DP / Q-learning<br/>1957-2016"]
         R2["<b>主目标</b><br/>早期 Actor-Critic<br/>~2000"]
         R3["<b>辅助工具</b><br/>PPO / SAC<br/>2015-2018"]
-        R4["<b>基本消失</b><br/>DPO / GRPO<br/>2023-2025"]
+        R4["<b>残留</b><br/>RLHF (PPO Critic)<br/>2017-2022"]
+        R5["<b>彻底消失</b><br/>DPO / GRPO<br/>2023-2025"]
     end
 
     R1 -->|"policy 学习出现"| R2
     R2 -->|"policy 升为主导"| R3
-    R3 -->|"偏好直接优化"| R4
+    R3 -->|"reward 转为偏好"| R4
+    R4 -->|"连 Critic 也移除"| R5
 
     style R1 fill:#2196F3,color:#fff,stroke:#1565C0
     style R2 fill:#FF9800,color:#fff,stroke:#E65100
     style R3 fill:#E91E63,color:#fff,stroke:#AD1457
-    style R4 fill:#9C27B0,color:#fff,stroke:#6A1B9A
+    style R4 fill:#C2185B,color:#fff,stroke:#880E4F
+    style R5 fill:#9C27B0,color:#fff,stroke:#6A1B9A
 ```
 
-## 八个关键转折点（详细说明）
+## 九个关键转折点（详细说明）
 
 ### 1. 起点：Bellman 方程（1957）
 
@@ -113,14 +122,31 @@ $$
 
 Bellman 方程退居辅助角色——Critic 用它来估计 advantage，但它不再是优化的主公式。这是从 **"逼近真值 Q"** 到 **"塑造行为分布"** 的转向。
 
-### 8. 偏好学习：Bellman 方程基本退场（2017-2025）
+### 8. 偏好驱动的 Reward：RLHF（2017-2022）
 
-RLHF/DPO/GRPO 进一步推进了这个转变。Reward 不再是工程设计的数学函数，而是从人类偏好中采样得来。DPO 甚至完全消除了 reward model 和 RL 循环。GRPO 用组内相对排序替代了 Critic。
+Christiano 2017 首次提出从人类偏好比较中学习 reward model；Ouyang 2022（InstructGPT）将其大规模应用于 LLM。Reward 不再是工程师手工设计的数学函数，而是从人类偏好中采样得来。
 
-**Bellman 方程在这些方法中基本不再出现。** 优化目标变成了纯粹的偏好分布塑造——哪些行为被人类偏好，就增强它们的概率。
+但训练 policy 时仍然使用 PPO——PPO 的 Critic 内部仍然依赖 Bellman 方程做 value estimation。**偏好改变了 reward 的来源，但优化机制中 Bellman 尚未完全退场。**
+
+### 9. 彻底决裂：纯统计偏好优化——DPO / GRPO（2023-2025）
+
+这是整个演化中最具标志性的断裂点。
+
+**DPO**（Rafailov 2023）直接在偏好对上优化 policy，完全消除了 reward model 和 RL 循环——没有 Critic，没有 value network，没有 Bellman bootstrap。
+
+**GRPO**（DeepSeek 2025）更进一步：对每个 prompt 生成一组回答，用组内相对排序作为 baseline 替代 Critic。它是纯粹的 policy gradient + 统计偏好重加权，整个训练过程中**没有任何 Bellman 方程的痕迹**。
+
+这标志着 RL 从 Bellman 状态方程优化**彻底转向**统计偏好优化：
+
+* 无 value network（V 或 Q）
+* 无 Bellman consistency loss
+* 无 bootstrap target
+* 优化目标 = 纯粹的偏好分布塑造
+
+**不是 Bellman 原理"错了"，而是在人类偏好本身就是 noisy、contextual、adhoc 的世界里，试图维护一个全局一致的 Bellman fixed point 既不必要，也不自然。统计偏好优化是对这一现实的正确回应。**
 
 ---
 
 ## 一句话总结
 
-> **Bellman 方程从"优化的全部"逐步退化为"辅助工具"，最终在偏好学习中基本消失。这不是退步，而是 RL 从"上帝视角求解析最优"转向"有限采样下的统计偏好塑造"的必然结果。**
+> **Bellman 方程从"优化的全部"逐步退化为"辅助工具"，最终在 DPO/GRPO 中彻底消失。这不是退步，而是 RL 从"上帝视角求解析最优"转向"有限采样下的统计偏好塑造"的必然结果。**
