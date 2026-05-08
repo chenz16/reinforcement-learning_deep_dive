@@ -235,6 +235,84 @@ This isolation is important because:
 
 Even in shared-backbone architectures (PPO/A2C), the gradients for Policy Head and Value Head are computed and applied separately. The shared Backbone parameters receive gradients from both directions, but the two Heads' updates are still driven by independent losses.
 
+#### Q/V and Policy: Coupled in Sampling, Decoupled in Gradients
+
+This is an easily confused point. Q/V and Policy are both coupled and decoupled, but at different levels:
+
+**At the sampling level: coupled**
+
+Q/V's training data comes from policy rollouts. The policy determines what trajectories the agent takes, what states it sees, what actions it performs, what rewards it receives. So:
+
+```text
+policy changes → sampling distribution changes → Q/V's training data changes → Q/V changes too
+
+Q/V and policy are indirectly coupled through the sampling process.
+```
+
+This is the essence of the RL closed-loop problem -- the "algorithm changes its own data distribution" discussed earlier.
+
+**At the gradient level: decoupled**
+
+But within any given training step's gradient computation, Q/V is a **constant** with respect to the policy gradient -- it does not participate in gradient computation:
+
+```text
+Policy gradient:
+  ∇_θ J = E[ ∇_θ log π_θ(a|s) · A(s,a) ]
+                  ↑                  ↑
+          differentiate w.r.t. θ    A is a constant, not differentiated w.r.t. θ
+                                    (A comes from Q/V, but Q/V's parameters don't
+                                     participate in this gradient)
+
+In other words:
+  - log π_θ(a|s) is differentiated w.r.t. policy parameters θ  ✓
+  - A(s,a) comes from Critic, but is treated as a fixed weight  ✗ (stop gradient)
+```
+
+Specifically for different algorithms:
+
+```text
+PPO:
+  loss = - clip(ratio, 1-ε, 1+ε) · A(s,a)
+  A(s,a) = r + γV(s') - V(s)
+  → Backprop only differentiates w.r.t. π_θ; V's output is detached / stop_gradient
+
+DDPG/TD3 (max Q loss — exception):
+  loss_actor = - Q(s, μ_θ(s))
+  → Here gradients DO flow through Q network to the action, then to the actor
+  → But Q network's parameters are still NOT updated (frozen / detached)
+  → Only actor parameters θ are updated
+
+SAC:
+  loss_actor = E[ α·log π(a|s) - Q(s,a) ]
+  → Q's output participates in forward computation, but Q's parameters receive no gradients
+```
+
+So the complete understanding is:
+
+```text
+┌────────────────────────────────────────────────────────────┐
+│                                                            │
+│  Sampling phase:  Policy ←──coupled──→ Q/V                 │
+│                   (policy determines data,                 │
+│                    data affects Q/V learning)               │
+│                                                            │
+│  Gradient phase:  Policy ←──decoupled──→ Q/V               │
+│                   (when updating policy, Q/V output         │
+│                    is a constant)                           │
+│                   (when updating Q/V, policy output         │
+│                    is a constant)                           │
+│                                                            │
+│  They collaborate indirectly through alternating iteration: │
+│    1. Sample data using current policy                      │
+│    2. Update Q/V using the data (policy params frozen)      │
+│    3. Update policy using updated Q/V (Q/V params frozen)   │
+│    4. Go back to 1                                         │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+```
+
+This also explains why Actor-Critic can be unstable -- two independent optimizers are chasing each other in alternating iteration: the Critic chases the policy's changing data distribution, while the Actor chases the Critic's changing value landscape. If one runs too fast, the other gets dragged off course.
+
 ---
 
 ## 2. RL Preference Fine-Tuning on SL Base Models

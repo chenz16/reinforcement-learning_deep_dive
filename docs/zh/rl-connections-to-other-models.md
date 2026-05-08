@@ -232,6 +232,80 @@ Critic / Value Head 是训练的"脚手架"——
 
 即使在共享 Backbone 的架构（PPO/A2C）中，Policy Head 和 Value Head 的梯度也是分别计算、分别应用的。共享 Backbone 的参数会同时接收两个方向的梯度，但两个 Head 的更新仍然是独立的 loss 驱动的。
 
+#### Q/V 和 Policy 的耦合与解耦：采样耦合，梯度解耦
+
+这是一个非常容易混淆的点。Q/V 和 Policy 之间既有耦合也有解耦，但发生在不同层面：
+
+**采样层面：耦合的**
+
+Q/V 的训练数据来自 policy 的 rollout。policy 决定了 agent 走什么轨迹、看到什么 state、做什么 action、拿到什么 reward。所以：
+
+```text
+policy 变了 → 采样分布变了 → Q/V 的训练数据变了 → Q/V 也会变
+
+Q/V 和 policy 通过采样过程间接耦合。
+```
+
+这就是 RL 闭环问题的本质——前面第 12 章讨论的"算法改变自己的数据分布"。
+
+**梯度层面：解耦的**
+
+但在任意一个训练 step 的梯度计算中，Q/V 对 policy gradient 来说是一个**常数**，不参与梯度计算：
+
+```text
+Policy gradient:
+  ∇_θ J = E[ ∇_θ log π_θ(a|s) · A(s,a) ]
+                  ↑                  ↑
+            对 θ 求导           A 是常数，不对 θ 求导
+                               （A 来自 Q/V，但 Q/V 的参数不参与这个梯度）
+
+换句话说：
+  - log π_θ(a|s) 对 policy 参数 θ 求导 ✓
+  - A(s,a) 来自 Critic，但在这个梯度中被当作固定权重 ✗（stop gradient）
+```
+
+具体到不同算法：
+
+```text
+PPO:
+  loss = - clip(ratio, 1-ε, 1+ε) · A(s,a)
+  A(s,a) = r + γV(s') - V(s)
+  → 反向传播时只对 π_θ 求导，V 的输出被 detach / stop_gradient
+
+DDPG/TD3（max Q loss 例外）:
+  loss_actor = - Q(s, μ_θ(s))
+  → 这里梯度确实流过 Q 网络到达 action，再到达 actor
+  → 但 Q 网络的参数仍然不更新（Q 的参数被冻结/detach）
+  → 只有 actor 参数 θ 在更新
+
+SAC:
+  loss_actor = E[ α·log π(a|s) - Q(s,a) ]
+  → Q 的输出参与前向计算，但 Q 的参数不接收梯度
+```
+
+所以完整的理解是：
+
+```text
+┌────────────────────────────────────────────────────────────┐
+│                                                            │
+│  采样阶段：  Policy ←──耦合──→ Q/V                          │
+│             （policy 决定数据，数据影响 Q/V 学习）            │
+│                                                            │
+│  梯度阶段：  Policy ←──解耦──→ Q/V                          │
+│             （更新 policy 时，Q/V 的输出是常数）              │
+│             （更新 Q/V 时，policy 的输出也是常数）            │
+│                                                            │
+│  两者通过"交替迭代"间接协作：                                 │
+│    1. 用当前 policy 采样数据                                 │
+│    2. 用数据更新 Q/V（policy 参数冻结）                      │
+│    3. 用更新后的 Q/V 更新 policy（Q/V 参数冻结）             │
+│    4. 回到 1                                                │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+```
+
+这也解释了为什么 Actor-Critic 有时不稳定——两个独立优化器在交替迭代中追赶彼此：Critic 在追 policy 变化的数据分布，Actor 在追 Critic 变化的 value landscape。如果其中一个跑太快，另一个会被带偏。
+
 ---
 
 ## 2. 在 SL 基座模型上做 RL 偏好微调
