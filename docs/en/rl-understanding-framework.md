@@ -160,6 +160,64 @@ I directly adjust the sampling distribution to make good actions more likely to 
 
 This is the shift from value-first to policy-first.
 
+#### Why Value-Based Methods Talk About "Loss" While Policy Gradient Talks About "Gradient"
+
+A common confusion when learning RL: DQN-style methods directly write a loss function, while policy gradient derivations start with the gradient and only mention loss at the end. Why?
+
+The reason is that the two have different derivation starting points.
+
+**Value-based methods** start from a natural regression problem:
+
+```text
+I have a target y (Bellman target). I want Q(s,a) to approximate it.
+So loss = (Q - y)^2. The gradient is derived from the loss.
+```
+
+This is completely isomorphic to supervised learning: loss comes first, then gradient.
+
+**Policy gradient** doesn't start from a loss, but from the gradient of an objective function:
+
+```text
+I want to maximize J(θ) = E[return].
+Through the policy gradient theorem:
+∇J(θ) = E[∇ log πθ(a|s) · A(s,a)]
+```
+
+This gradient comes from mathematical derivation of J(θ), not from writing a loss first and differentiating. The derivation uses differentiation of trajectory probabilities (the likelihood ratio trick) to directly obtain the gradient form.
+
+So what is the loss? The loss is actually **constructed after the fact**. To use PyTorch / TensorFlow's automatic differentiation, we need to construct a loss such that autograd's derivative of it exactly equals the policy gradient above.
+
+This loss is:
+
+```text
+L = - log πθ(a|s) · A(s,a)
+```
+
+Verification -- differentiating with respect to θ:
+
+```text
+∇L = - ∇ log πθ(a|s) · A(s,a)
+```
+
+With the negative sign (because the optimizer minimizes, but we want to maximize J), this recovers the policy gradient form.
+
+So the complete logic is:
+
+```text
+Value-based: loss is the starting point → gradient is derived from the loss.
+Policy gradient: gradient is the starting point → loss is constructed after the fact to work with autograd.
+```
+
+But ultimately in code, both have exactly the same training loop:
+
+```text
+loss = compute_loss(batch)
+loss.backward()
+optimizer.step()
+```
+
+This is why RL and SL share essentially the same optimization framework -- regardless of whether the loss came first or was constructed afterward, everything ultimately falls into the same loss → backward → update pipeline.
+
 ### 1.5 Policy Gradient and Maximum Likelihood: From Unweighted MLE to Weighted MLE
 
 Maximum likelihood estimation is essentially: using statistical behavior to estimate parameters.
@@ -1122,7 +1180,157 @@ Directly optimize stochastic policy, replace hard argmax with preference distrib
 
 ---
 
-## 12. Final Understanding
+## 12. RL vs SL: Similar Optimization Frameworks, Fundamentally Different Sampling Structures
+
+### 12.1 Similarity: Both Ultimately Minimize a Loss
+
+From the perspective of loss and optimizer, RL and SL are remarkably similar.
+
+SL's typical structure:
+
+```text
+loss = L(f_θ(x), y)
+θ ← θ - α ∇L
+```
+
+RL also ultimately optimizes a loss:
+
+```text
+Value-based:  loss = (Q_θ(s,a) - y)^2
+Policy-based: loss = - log π_θ(a|s) · A(s,a)
+```
+
+Both use SGD / Adam. Gradients are taken with respect to parameters θ. Backpropagation is the same.
+
+So at the "writing code to train a model" level, RL and SL share essentially the same optimization framework: forward → compute loss → backward → update.
+
+### 12.2 Difference One: RL Data Has Temporal Dependencies; Labels Come From Environment Feedback
+
+SL data is typically i.i.d.:
+
+```text
+(x_1, y_1), (x_2, y_2), ..., (x_n, y_n)
+```
+
+Each data point is independently and identically distributed. Labels y are given by the external world in advance.
+
+RL data is fundamentally different:
+
+```text
+s_0 → a_0 → r_0, s_1 → a_1 → r_1, s_2 → ...
+```
+
+It is a time series. The current state depends on the previous action, reward depends on the current state-action pair, and the next state is determined by the environment's transition probability.
+
+That is:
+
+```text
+SL: Labels are pre-given, independent of the model.
+RL: "Labels" (reward / advantage / Q target) come from environment feedback, dependent on the agent's behavior.
+```
+
+This means RL's labels are not static -- they are products of agent-environment interaction. Different actions yield different rewards and states.
+
+### 12.3 Difference Two (The Core): RL's Algorithm Changes Its Own Sampling Distribution
+
+This is the most fundamental difference between RL and SL.
+
+In SL:
+
+```text
+Dataset D is fixed.
+During training, the optimizer updates θ, but D doesn't change.
+The model changes; the data doesn't.
+```
+
+In RL:
+
+```text
+Data comes from the policy's sampling.
+During training, the optimizer updates θ → policy changes → sampling distribution changes → future data changes.
+The model changes; the data changes too.
+```
+
+Illustrated:
+
+```text
+SL structure (open loop):
+
+  Fixed data D → loss → update θ → better model
+                  ↑                      |
+                  |______________________|
+                  (but D stays the same)
+
+
+RL structure (closed loop):
+
+  policy π_θ → sample data → loss → update θ → new policy π_θ'
+      ↑                                            |
+      |____________________________________________|
+      (policy changed → sampling distribution changed → data distribution changed)
+```
+
+This closed loop is the root of all RL complexity.
+
+Because the policy is both "the object being optimized" and "the generator of data." Every step the optimizer takes changes not just the model, but the training data distribution itself.
+
+This creates problems that don't exist in SL:
+
+```text
+1. Distribution drift: Old data was generated by old policy; using it to train a new policy introduces bias.
+2. Sampling collapse: If the policy becomes deterministic too early, future data becomes very narrow.
+3. Bootstrap amplification: Q targets create their own labels, which in turn affect future sampling.
+4. Exploration-exploitation tension: Learning well requires diverse data, but a good policy tends to only take "good" actions.
+```
+
+### 12.4 An Analogy
+
+Think of it this way:
+
+```text
+SL is like a student with a pre-printed textbook. Every study session uses the same book.
+   How the student studies doesn't change the textbook.
+
+RL is like a student who writes their own textbook as they learn.
+   What they learn affects what practice problems they write next,
+   and those problems affect what they learn after that.
+   If they form premature biases, the rest of the textbook only contains biased content.
+```
+
+### 12.5 How This Difference Explains RL's Many Techniques
+
+Many seemingly "extra" techniques in RL exist to handle this closed-loop problem:
+
+| Technique | What Closed-Loop Problem It Solves |
+|---|---|
+| Replay Buffer | Break temporal correlation, allow old data reuse, mitigate distribution drift |
+| Target Network | Stabilize bootstrap targets, prevent "chasing itself" |
+| ε-greedy / Entropy | Prevent sampling collapse, ensure data coverage |
+| Importance Sampling | Correct distribution mismatch between old and new policies |
+| PPO Clipping | Limit old-new policy divergence, prevent distribution jumps |
+| Off-policy methods | Allow using data from non-current policies, improve data efficiency |
+| On-policy methods | Avoid distribution mismatch, but data is discarded after use |
+
+These techniques are either nonexistent or unnecessary in SL -- because SL's data distribution is not changed by the model.
+
+### 12.6 Most Compressed Expression
+
+```text
+SL: Optimize a model on fixed data.              The algorithm doesn't affect the data distribution.
+RL: Optimize a model and data distribution jointly.  The algorithm itself IS the data distribution generator.
+```
+
+So RL's real difficulty isn't in loss design -- the loss is similar to SL -- but in:
+
+```text
+While optimizing an objective, the measurement method for that objective (the sampling distribution) is also being changed by you.
+```
+
+This is why RL needs so many seemingly ad-hoc stabilization tricks: not because the optimization itself is harder, but because the data ground is shifting while you optimize.
+
+---
+
+## 13. Final Understanding
 
 RL is not simply optimizing a clean loss. RL is optimizing within a closed loop where sampling, value estimation, and decision-making mutually influence each other.
 

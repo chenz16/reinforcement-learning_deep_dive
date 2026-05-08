@@ -160,6 +160,64 @@ Policy gradient 的思路是：
 
 这就是从 value-first 到 policy-first 的转变。
 
+#### 为什么 value-based 讲 loss，而 policy gradient 讲 gradient？
+
+初学 RL 时一个常见的困惑是：DQN 这类方法直接写 loss function，而 policy gradient 推导时先讲 gradient，最后才提到 loss。为什么？
+
+原因是两者的推导起点不同。
+
+**Value-based 方法**的起点是一个自然的回归问题：
+
+```text
+我有一个 target y（Bellman target），我希望 Q(s,a) 逼近它。
+所以 loss = (Q - y)^2。梯度从 loss 推出来。
+```
+
+这和监督学习完全同构：先有 loss，再求梯度。
+
+**Policy gradient** 的起点不是一个 loss，而是一个目标函数的梯度：
+
+```text
+我想最大化 J(θ) = E[return]。
+通过 policy gradient theorem，得到：
+∇J(θ) = E[∇ log πθ(a|s) · A(s,a)]
+```
+
+注意这个 gradient 是从 J(θ) 的数学推导里出来的，不是先写一个 loss 再求导。它的推导用到了对轨迹概率的微分（likelihood ratio trick），直接得到了梯度的形式。
+
+那 loss 是什么？其实 loss 是**事后构造的**。为了能用 PyTorch / TensorFlow 的自动微分，我们需要构造一个 loss，使得 autograd 对它求导之后，恰好等于上面的 policy gradient。
+
+这个 loss 就是：
+
+```text
+L = - log πθ(a|s) · A(s,a)
+```
+
+验证：对 θ 求导：
+
+```text
+∇L = - ∇ log πθ(a|s) · A(s,a)
+```
+
+加上负号（因为 optimizer 做 minimize，而我们要 maximize J），就恢复了 policy gradient 的形式。
+
+所以完整的逻辑是：
+
+```text
+Value-based: loss 是起点 → 梯度是从 loss 推出来的。
+Policy gradient: 梯度是起点 → loss 是为了配合 autograd 事后构造的。
+```
+
+但最终在代码里，两者的训练循环完全一样：
+
+```text
+loss = compute_loss(batch)
+loss.backward()
+optimizer.step()
+```
+
+这就是为什么说 RL 和 SL 的 optimization framework 基本相同——不管 loss 是先有还是后构造的，最终都落入了同一套 loss → backward → update 的流程。
+
 ### 1.5 Policy Gradient 和最大似然：从无权重 MLE 到加权 MLE
 
 最大似然估计本质上是：使用统计行为来估计参数。
@@ -1122,7 +1180,156 @@ Policy Gradient / PPO / SAC:
 
 ---
 
-## 12. 最终理解
+## 12. RL vs SL：看似相同的优化框架，本质不同的采样结构
+
+### 12.1 相同点：最终都是在最小化一个 loss
+
+从 loss 和优化器的角度看，RL 和 SL 其实非常接近。
+
+SL 的典型结构是：
+
+```text
+loss = L(f_θ(x), y)
+θ ← θ - α ∇L
+```
+
+RL 最终也是在优化一个 loss：
+
+```text
+Value-based:  loss = (Q_θ(s,a) - y)^2
+Policy-based: loss = - log π_θ(a|s) · A(s,a)
+```
+
+优化器都是 SGD / Adam。梯度都是对参数 θ 求导。反向传播也一样。
+
+所以从"写代码训练模型"的层面，RL 和 SL 的 optimization framework 基本相同：都是 forward → compute loss → backward → update。
+
+### 12.2 不同点一：RL 的数据有时序依赖，标签来自环境反馈
+
+SL 的数据通常是 i.i.d. 的：
+
+```text
+(x_1, y_1), (x_2, y_2), ..., (x_n, y_n)
+```
+
+每条数据独立同分布，标签 y 是外部世界预先给定的。
+
+RL 的数据有本质不同：
+
+```text
+s_0 → a_0 → r_0, s_1 → a_1 → r_1, s_2 → ...
+```
+
+它是一条时间序列。当前 state 依赖上一步的 action，reward 依赖当前 state-action 对，下一个 state 由环境转移概率决定。
+
+也就是说：
+
+```text
+SL: 标签是预先给定的，不依赖模型。
+RL: "标签"（reward / advantage / Q target）来自环境反馈，依赖 agent 的行为。
+```
+
+这意味着 RL 的 label 不是静态的，而是 agent 和环境交互的产物。你做不同的 action，看到不同的 reward 和 state。
+
+### 12.3 不同点二（核心）：RL 的算法会改变自己的采样分布
+
+这是 RL 和 SL 最根本的区别。
+
+在 SL 里：
+
+```text
+数据集 D 是固定的。
+训练过程中，优化器更新 θ，但 D 不变。
+模型变了，数据不变。
+```
+
+在 RL 里：
+
+```text
+数据来自 policy 的采样。
+训练过程中，优化器更新 θ → policy 变了 → 采样分布变了 → 未来数据变了。
+模型变了，数据也变了。
+```
+
+可以画成这样：
+
+```text
+SL 的结构（开环）：
+
+  固定数据 D → loss → 更新 θ → 更好的模型
+                ↑                    |
+                |____________________|
+                （但 D 不变）
+
+
+RL 的结构（闭环）：
+
+  policy π_θ → 采样数据 → loss → 更新 θ → 新 policy π_θ'
+      ↑                                        |
+      |________________________________________|
+      （policy 变了 → 采样分布也变了 → 数据分布变了）
+```
+
+这个闭环就是 RL 所有复杂性的根源。
+
+因为 policy 既是"被优化的对象"，又是"数据的生成器"。优化器每走一步，不只是模型变了，连训练数据的分布都跟着变了。
+
+这导致了 SL 里不存在的问题：
+
+```text
+1. 分布漂移：旧数据是旧 policy 生成的，用来训练新 policy 会有偏差。
+2. 采样塌缩：如果 policy 过早确定化，未来只能采到很窄的数据。
+3. 自举放大：Q target 自己造 label，label 反过来影响未来采样。
+4. 探索-利用矛盾：想学好必须采到多样数据，但好的 policy 倾向于只做"好的"action。
+```
+
+### 12.4 一个类比
+
+可以这样理解：
+
+```text
+SL 像是一个学生，课本已经印好了，每次复习都是同一本书。
+   学生怎么学，不影响课本内容。
+
+RL 像是一个学生，边学边写自己的课本。
+   他学到什么影响他下次会写什么练习题，练习题又影响他接下来学到什么。
+   如果他过早形成偏见，后面的课本就只有偏见的内容。
+```
+
+### 12.5 这个区别如何解释 RL 的各种技术
+
+RL 里很多看起来"额外"的技术，都是在处理这个闭环问题：
+
+| 技术 | 解决什么闭环问题 |
+|---|---|
+| Replay Buffer | 打破时序相关性，让旧数据可以重复使用，缓解分布漂移 |
+| Target Network | 稳定 bootstrap target，避免"自己追自己" |
+| ε-greedy / Entropy | 防止采样塌缩，保证数据覆盖 |
+| Importance Sampling | 修正旧 policy 和新 policy 的分布差异 |
+| PPO Clipping | 限制新旧 policy 差距，防止分布突变 |
+| Off-policy 方法 | 允许使用非当前 policy 的数据，提高数据利用率 |
+| On-policy 方法 | 避免分布不匹配，但代价是数据用完即弃 |
+
+这些技术在 SL 里要么不存在，要么不必要——因为 SL 的数据分布不会被模型改变。
+
+### 12.6 最压缩的表达
+
+```text
+SL：固定数据上优化模型。           算法不影响数据分布。
+RL：动态数据上优化模型和数据分布。    算法本身就是数据分布的生成器。
+```
+
+所以 RL 的真正难度不在 loss 设计——loss 和 SL 差不多——而在于：
+
+```text
+你在优化一个目标的同时，这个目标的测量方式（采样分布）也在被你改变。
+```
+
+这就是为什么 RL 需要那么多看似 adhoc 的稳定技巧：不是因为优化本身更难，而是因为优化的同时数据地基在移动。
+
+---
+
+## 13. 最终理解
 
 RL 不是简单优化一个干净 loss。RL 是在采样、估值、决策三者互相影响的闭环里做优化。
 
