@@ -1,10 +1,11 @@
 \chapter{Connecting RL with SL: Same Optimization, Different Sampling}
 \label{ch:connecting-rl-sl}
 
-Most introductions to reinforcement learning begin with the Bellman equation, march through Q-learning, and end with a collection of algorithms.
-This framing creates a dangerous illusion: that RL is merely supervised learning with delayed labels.
-It is not.
-The single most important thing to understand about RL is its \emph{sampling structure}---and how that structure differs from supervised learning at a fundamental level.
+Most people learning RL sense that it is ``different from SL,'' but the two feel like parallel worlds---you learn one set of concepts for supervised learning and a completely separate set for RL, with no clear bridge between them.
+
+This chapter builds that bridge. We show that RL and SL share \emph{exactly the same optimization machinery}---the same \texttt{loss.backward(); optimizer.step()} loop---and that their true difference is not in the loss or the optimizer, but in a single structural fact: \textbf{in RL, the algorithm changes its own data distribution; in SL, it does not.}
+
+Once you see this one difference clearly, every ``RL-specific'' technique---replay buffers, target networks, importance sampling, clipping, entropy bonuses---stops being an isolated trick and becomes a natural response to the same root cause.
 
 % ===========================================================
 \section{The Same Optimization Framework}
