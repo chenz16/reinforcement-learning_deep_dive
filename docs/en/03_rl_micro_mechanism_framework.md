@@ -1924,7 +1924,87 @@ This is why RL needs so many seemingly ad-hoc stabilization tricks: not because 
 
 ---
 
-## 14. Final Understanding
+## 14. RL's Contribution Back to SL/SSL: Bootstrap Learning
+
+We have been using the SL perspective to understand RL. But the reverse is also true: RL made a deep contribution to SL and self-supervised learning (SSL): **bootstrap target construction -- training targets come not from external labels, but from the model's own estimates.**
+
+### 14.1 Comparing Label Sources: SL, RL, SSL
+
+```text
+SL: label comes from outside
+  Data: (x, y)
+  y is human-annotated, training does not change y
+  Model passively fits fixed labels
+
+RL: target comes from self-estimation (bootstrap)
+  Q(s,a) ← r + γ max_a' Q(s',a')
+  Target is not externally given — model constructs it from its own future estimate
+  Model creates its own label, then fits that label
+
+SSL: target comes from data's own structure
+  Masked LM: mask a token, predict the masked token (label = original token)
+  Contrastive: two augmentations of the same image should have similar repr (label = self)
+  BYOL/DINO: student chases teacher/momentum model (label = slow version of self)
+```
+
+### 14.2 How RL's Bootstrap Idea Was Absorbed by SSL
+
+RL proved something early on:
+
+```text
+Even without complete external labels,
+as long as you have "current estimate + environment feedback + bootstrapped target,"
+you can form an effective learning loop.
+```
+
+This idea was widely absorbed by SSL -- only the object of bootstrapping differs:
+
+| Domain | Bootstrap Object | Target Source | What Is Learned |
+|---|---|---|---|
+| RL / TD | Q / V value | reward + next-state value estimate | behavioral value |
+| DQN | Q network | TD target from target network | action value |
+| BYOL / DINO | student representation | teacher / momentum encoder | semantic representation |
+| Masked LM (BERT) | missing token | original data itself | language structure |
+| MAE | missing image patch | original pixels | visual structure |
+| Diffusion Model | clean data | predict noise/clean from noisy data | data distribution |
+
+### 14.3 The Shared Underlying Philosophy
+
+```text
+SL's worldview: there are god-given labels; the model's job is to fit them.
+RL's worldview: no god-given labels; only sampling, feedback, and bootstrap.
+SSL's worldview: no human labels; only data's own structure and model-generated targets.
+
+RL and SSL share a core belief:
+  A learning system need not depend entirely on external labels.
+  It can create its own supervision signal through sampling, perturbation,
+  prediction, and bootstrapping.
+```
+
+This also aligns perfectly with the RL evolution arc from earlier:
+
+```text
+From "god's-eye precise optimization" (DP, known model, known reward)
+to "no god's-eye statistical learning" (sampling, preferences, bootstrap, iterative correction)
+
+This path was not walked by RL alone — all of modern ML walked it:
+  SL (needs labels) → SSL (no labels, self-constructed targets) → generative models (learn the whole distribution)
+```
+
+### 14.4 One-Sentence Summary
+
+```text
+RL's deep contribution to modern ML is not just reward and policy,
+but that it pushed learning from "fixed-label supervision"
+to "bootstrap target construction" very early on.
+
+TD learning's bootstrap idea → SSL's self-constructed targets
+Same philosophy, different domains.
+```
+
+---
+
+## 15. Final Understanding
 
 RL is not simply optimizing a clean loss. RL is optimizing within a closed loop where sampling, value estimation, and decision-making mutually influence each other.
 
