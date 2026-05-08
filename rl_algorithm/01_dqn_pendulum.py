@@ -2,12 +2,22 @@
 DQN on Pendulum-v1 (with discretized actions)
 ==============================================
 
-核心概念：
+核心概念（原始 DQN — Mnih et al. 2015）：
 1. Q(s,a) 表示在状态 s 执行动作 a 后，按最优策略能获得的期望累计回报
 2. Bellman 方程：Q(s,a) = r + γ·max_a' Q(s',a')
 3. 经验回放：打破样本间的时间相关性，提高数据利用率
 4. 目标网络：用一个滞后更新的网络计算 target，稳定训练
 5. ε-greedy：以 ε 概率随机探索，1-ε 概率选最优动作
+
+本代码的非原始 DQN 部分（标注了 [非原始DQN]）：
+- Soft target update (Polyak averaging)：来自 DDPG (Lillicrap et al. 2016)
+  原始 DQN 用 hard copy（每 C 步整体复制）
+- Prioritized Experience Replay (PER)：来自 Schaul et al. 2015
+  原始 DQN 用均匀采样的 replay buffer
+- Importance Sampling 权重修正：配合 PER 使用，原始 DQN 没有
+
+这些改进不改变 DQN 的本质架构（bootstrap MSE + target net + replay + ε-greedy），
+而是在同一框架内"给 Qmax 加更好的缰绳"。
 
 Pendulum-v1:
   - 观测: [cos(θ), sin(θ), θ_dot]  (3维)
@@ -36,9 +46,10 @@ EPSILON_END = 0.01
 EPSILON_DECAY = 200             # 线性衰减的 episode 数
 REPLAY_BUFFER_SIZE = 50000
 BATCH_SIZE = 128
-TARGET_UPDATE_MODE = "soft"     # "hard": 每 N episode 整体复制; "soft": 每步 Polyak averaging
-TARGET_UPDATE_FREQ = 10         # hard 模式：每 N 个 episode 更新目标网络
-TARGET_TAU = 0.005              # soft 模式：Polyak 系数 θ_target ← τ·θ + (1-τ)·θ_target
+TARGET_UPDATE_MODE = "soft"     # [非原始DQN] "soft" = Polyak averaging，来自 DDPG (Lillicrap 2016)
+                                # [原始DQN] 用 "hard"：每 N episode 整体复制（Mnih et al. 2015）
+TARGET_UPDATE_FREQ = 10         # hard 模式：每 N 个 episode 更新目标网络 [原始DQN 做法]
+TARGET_TAU = 0.005              # soft 模式：Polyak 系数 θ_target ← τ·θ + (1-τ)·θ_target [DDPG 引入]
 NUM_EPISODES = 300
 MAX_STEPS = 200                 # Pendulum-v1 默认 200 步
 
@@ -140,7 +151,9 @@ class SumTree:
 #   - β 从小逐渐退火到 1，训练后期完全修正偏差
 #   - 权重归一化：w_i / max(w)，避免梯度爆炸
 # ============================================================
-PER_ALPHA = 0.6        # 优先级指数：0=均匀，1=完全按优先级
+# [非原始DQN] Prioritized Experience Replay (Schaul et al. 2015)
+# 原始 DQN (Mnih et al. 2015) 使用均匀采样的 replay buffer
+PER_ALPHA = 0.6        # 优先级指数：0=均匀（退化为原始DQN），1=完全按优先级
 PER_BETA_START = 0.4   # IS 修正指数起始值
 PER_BETA_END = 1.0     # IS 修正指数终止值（训练结束时达到 1）
 PER_EPSILON = 1e-5     # 防止优先级为 0
