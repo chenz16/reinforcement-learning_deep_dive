@@ -1127,6 +1127,119 @@ Q 和 π 互相依赖，但每一步只优化一个，把另一个当常数。
 稳定性取决于两个优化器的步调是否协调。
 ```
 
+### 7.10 Action 在 Q 训练和 Policy 训练中的不同角色
+
+上面讲了 Actor 和 Critic 交替迭代。这里更细致地拆解一个容易混淆的点：**Q 网络训练时，action a 到底从哪来？它参不参与梯度？**
+
+#### Q 训练时：action 是输入数据，不是优化变量
+
+Q 网络学的是 Q_φ(s, a)，所以训练 Q 必须有 (s, a) 作为输入。这个 a 有两个来源：
+
+**来源 A：从 replay buffer 里拿（历史数据）**
+
+```text
+Replay Buffer 里存着历史 transition：(s, a, r, s')
+
+这个 a 是过去与环境交互时产生的，可能来自：
+  - 历史 Actor + exploration noise
+  - 随机探索
+  - 人类数据 / offline dataset
+  - 旧 policy
+
+进入 Critic loss 时，它就是一个数据字段——纯粹的常数。
+
+  Replay Buffer
+  (s, a, r, s')
+       │
+       ├── s, a  → Critic Q_φ(s, a)  ← 只对 φ 求梯度
+       │
+       └── r, s' → 构造 TD target y
+
+这时 Actor 根本不参与 Q(s,a) 的前向计算。
+```
+
+**来源 B：用当前/target policy 生成（但 detach）**
+
+```text
+Critic 的 TD target 里经常需要 "下一步 action" a'：
+
+DDPG/TD3:
+  a' = μ_{θ_target}(s')           ← target actor 生成
+  y  = r + γ · Q_{φ_target}(s', a')
+
+SAC:
+  a' ~ π_θ(·|s')                  ← 当前 actor 采样
+  y  = r + γ · [min Q_{φ_target}(s', a') - α · log π(a'|s')]
+
+代码中的写法：
+
+  with torch.no_grad():                    ← 整个 block 不算梯度
+      a_next, logp = actor(s_next)         ← policy 前向，但 detach
+      target_q = target_critic(s_next, a_next)
+      y = r + gamma * (target_q - alpha * logp)
+
+  q = critic(s, a_from_buffer)             ← buffer 里的 a
+  critic_loss = mse(q, y)
+  critic_loss.backward()                   ← 只更新 critic 参数 φ
+  critic_optimizer.step()
+
+policy 参与了 target 的生成，但被 no_grad 包裹。
+相当于：把 policy 暂时当成一个 "常数生成器"。
+```
+
+#### 两种来源的对比
+
+```text
+┌───────────────────────────────────────────────────────────────────┐
+│                Q 训练时 action 的角色                              │
+├──────────────────────┬────────────────────────────────────────────┤
+│ 来源 A (buffer)      │ 来源 B (policy 生成后 detach)              │
+├──────────────────────┼────────────────────────────────────────────┤
+│ a 来自历史数据        │ a' 来自当前/target policy 的前向输出        │
+│ 天然就是常数          │ 生成后 detach/no_grad，等价于常数           │
+│ 用于 Q(s,a) 的输入   │ 用于 TD target y 的计算                    │
+│ Actor 完全不参与      │ Actor 参与前向，但不参与梯度                 │
+├──────────────────────┴────────────────────────────────────────────┤
+│ 共同点：Q 训练时，action 都是"输入数据"，不是"可优化变量"          │
+│ 只有 Critic 参数 φ 被更新                                         │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+#### Actor 训练时：action 才变成可优化变量
+
+只有在 Actor update 的时候，action 才接上梯度：
+
+```text
+Actor update（DDPG/SAC 风格）：
+
+  a = π_θ(s)                       ← Actor 前向，参与梯度！
+  J = Q_φ(s, a)                    ← Critic 前向，但 φ 冻结
+  actor_loss = -J                  ← 最大化 Q
+  actor_loss.backward()            ← 梯度路径：loss → Q → ∂Q/∂a → a → ∂a/∂θ → θ
+
+  梯度流：
+    Critic Q_φ    ──(∂Q/∂a)──→    action a    ──(∂a/∂θ)──→    Actor θ
+    (参数冻结)                    (中间变量)                   (参数更新)
+```
+
+```text
+Actor update（PPO 风格）：
+
+  loss = -log π_θ(a|s) · A(s,a)
+  A 来自 Critic，但被 detach → A 是常数权重
+  只对 π_θ 的参数 θ 求梯度
+```
+
+#### 一句话总结
+
+```text
+Q 训练时：action 是 "输入数据"  → 常数，不管来源
+Actor 训练时：action 是 "可优化变量" → 梯度流过 action 回到 Actor 参数
+
+同一个 action，在不同阶段扮演不同角色——
+这就是交替迭代中 "固定一个、优化另一个" 的具体实现。
+```
+
 ---
 
 ## 8. 从 action 建模角度理解：离散 action、连续 action、确定性与随机性
