@@ -51,6 +51,190 @@ Representative algorithms: A2C, DDPG, TD3, SAC, PPO (V-critic version)
 
 Pure RL training from scratch is suitable for: game AI (Atari, Go), robot control, low-level control for autonomous driving.
 
+### 1.4 Reward Sources: Must Be Prepared Before Training
+
+The RL training loop requires reward signals, but **reward is not learned during RL training -- it must be prepared beforehand.** There are three sources:
+
+```text
+Source 1: Environment-provided reward (cleanest)
+  Game scores, distance/collision/energy in physics simulation
+  → Environment directly returns a scalar reward
+  → No extra preparation needed
+
+Source 2: Rule-based reward (engineered)
+  Math answer correctness, code compilation pass rate, format compliance
+  → Manually define a rule function R(output) → scalar
+  → Commonly used with GRPO
+
+Source 3: Reward Model learned from preference data (statistical approximation)
+  Collect human preference pairs: (chosen, rejected)
+  → Train a Reward Model to approximate human preferences
+  → RM is essentially an SL model: input (prompt, response), output scalar score
+  → Standard approach for PPO-RLHF
+```
+
+Key understanding:
+
+```text
+The Reward Model is not part of RL -- it is a precondition for RL training.
+It is trained via SL on preference data, then frozen as a "scorer" during RL training.
+```
+
+Comparison of the three sources:
+
+| Reward Source | Preparation | Pros | Cons | Typical Use |
+|---|---|---|---|---|
+| Environment-provided | None needed | Clean, unbiased | Only for environments with clear numerical feedback | Games, simulation |
+| Rule-based | Manual rule writing | Precise, interpretable | Hard to cover complex preferences | Math/code verification, GRPO |
+| Reward Model | Collect preferences + SL training | Captures fuzzy preferences | RM itself has bias and noise | RLHF, InstructGPT |
+
+### 1.5 Architecture Diagram: Which Modules Are Used for Training vs. Inference
+
+Pure RL architectures come in three typical patterns. The key distinction: **training requires more modules than inference -- the Critic exists only during training and is discarded at inference time.**
+
+#### Pattern A: Value-based (DQN)
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│                Used for Training + Inference             │
+│                                                         │
+│   Observation ──→ ┌──────────────┐ ──→ ┌─────────────┐  │
+│   (image/state)   │   Backbone   │     │  Q Head     │  │
+│                    │  (CNN/MLP)   │     │ outputs Q   │  │
+│                    │              │     │ for each    │  │
+│                    └──────────────┘     │ action      │  │
+│                                        └──────┬──────┘  │
+│                                               │         │
+│                                          argmax Q       │
+│                                               │         │
+│                                        select action    │
+└─────────────────────────────────────────────────────────┘
+
+Inference: entire network used (Backbone + Q Head + argmax)
+Training:  same network + target network (frozen copy)
+No separate policy network -- policy is implicit in argmax Q
+```
+
+#### Pattern B: Actor-Critic with Shared Backbone (common in PPO / A2C)
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│                    ┌──────────────┐                          │
+│   Observation ──→  │   Shared     │                          │
+│   (image/state)    │   Backbone   │                          │
+│                    │  (CNN/MLP)   │                          │
+│                    └──────┬───────┘                          │
+│                           │                                 │
+│                     ┌─────┴──────┐                          │
+│                     │            │                          │
+│               ┌─────▼─────┐  ┌──▼──────────┐               │
+│               │ Policy    │  │ Value       │               │
+│               │ Head      │  │ Head        │               │
+│               │           │  │             │               │
+│               │ outputs   │  │ outputs V(s)│               │
+│               │ π(a|s)    │  │ (scalar)    │               │
+│               │ (softmax/ │  │             │               │
+│               │  Gaussian)│  │             │               │
+│               └─────┬─────┘  └──────┬──────┘               │
+│                     │               │                      │
+│                 ┌───┴───┐     ┌─────┴──────┐               │
+│   Inference ✓   │sample │     │ compute    │  Training only ✗│
+│                 │action │     │ advantage  │               │
+│                 └────────┘     └────────────┘               │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+Inference: only Backbone + Policy Head → output action
+Training:  Backbone + Policy Head + Value Head → advantage guides policy update
+Value Head is discarded at deployment
+```
+
+#### Pattern C: Actor-Critic with Separate Networks (common in DDPG / TD3 / SAC)
+
+```text
+┌──────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│   ┌─── Actor Network (used at inference ✓) ──────────────┐       │
+│   │                                                      │       │
+│   │  Observation ──→ ┌────────────┐ ──→ ┌─────────────┐  │       │
+│   │                  │  Actor     │     │ Policy Head  │  │       │
+│   │                  │  Backbone  │     │ outputs      │  │       │
+│   │                  │  (MLP)     │     │ action       │  │       │
+│   │                  │            │     │ (μ(s) or     │  │       │
+│   │                  │            │     │  π(a|s))     │  │       │
+│   │                  └────────────┘     └──────────────┘  │       │
+│   └──────────────────────────────────────────────────────┘       │
+│                                                                  │
+│   ┌─── Critic Network (training only ✗) ─────────────────┐       │
+│   │                                                      │       │
+│   │  (s, a) ──→ ┌────────────┐ ──→ ┌────────────────┐   │       │
+│   │              │  Critic    │     │ Q Head         │   │       │
+│   │              │  Backbone  │     │ outputs Q(s,a) │   │       │
+│   │              │  (MLP)     │     │ (scalar)       │   │       │
+│   │              └────────────┘     └────────────────┘   │       │
+│   │                                                      │       │
+│   │  TD3/SAC typically have two Critics (double Q)       │       │
+│   └──────────────────────────────────────────────────────┘       │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+
+Inference: only Actor Network → output action
+Training:  Actor + Critic → Critic's Q gradient guides Actor updates
+Entire Critic Network is discarded at deployment
+```
+
+#### Summary: Training vs. Inference Module Comparison
+
+| Architecture | Used During Training | Used During Inference | Discarded at Inference |
+|---|---|---|---|
+| **DQN** | Backbone + Q Head + Target Network | Backbone + Q Head | Target Network |
+| **PPO (shared)** | Shared Backbone + Policy Head + Value Head | Shared Backbone + Policy Head | Value Head |
+| **SAC/TD3 (separate)** | Actor Net + Critic Net(s) | Actor Net | Entire Critic Net |
+
+Core principle:
+
+```text
+The Critic / Value Head is training "scaffolding" --
+it provides gradient signals during training (advantage / Q gradient),
+but is completely unnecessary at inference and is discarded.
+
+The only thing deployed to production is the Policy / Actor network.
+```
+
+#### Value and Policy Are Two Independent Iteration Processes During Training
+
+In Actor-Critic architectures, although the Critic and Actor are updated within the same training loop, they are **two independent optimization processes**, each with its own loss:
+
+```text
+Within the same training step:
+
+  Step 1: Critic update (independent)
+    loss_critic = (V(s) - V_target)^2     or  (Q(s,a) - Q_target)^2
+    Only updates Critic parameters
+    Goal: make value estimates more accurate
+
+  Step 2: Actor update (independent)
+    loss_actor = - log π(a|s) · A(s,a)    or  - Q(s, μ(s))
+    Only updates Actor parameters
+    Goal: make the policy better
+
+  Two losses backpropagate separately, updating their own parameters.
+  They share the same batch of data, but the optimization processes are isolated.
+```
+
+This isolation is important because:
+
+```text
+1. Critic's goal is accurate estimation (regression problem)
+2. Actor's goal is better behavior (preference optimization problem)
+3. The two losses are fundamentally different in nature -- mixing them would cause interference
+4. TD3 deliberately makes Actor update less frequently than Critic (delayed policy update)
+   → Let Critic stabilize first, then guide Actor
+```
+
+Even in shared-backbone architectures (PPO/A2C), the gradients for Policy Head and Value Head are computed and applied separately. The shared Backbone parameters receive gradients from both directions, but the two Heads' updates are still driven by independent losses.
+
 ---
 
 ## 2. RL Preference Fine-Tuning on SL Base Models
