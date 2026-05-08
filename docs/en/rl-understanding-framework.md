@@ -1,0 +1,1157 @@
+# Understanding Reinforcement Learning from Multiple Dimensions: From Bellman, Argmax to Preference Optimization
+
+> **Positioning note**: This essay provides a **micro-mechanism analysis** of RL -- dissecting what each technique does and why, across multiple dimensions including loss design, data utilization, exploration strategy, bias management, compressed representation, and action modeling. It complements "From Bellman to Preference Learning": that essay traces the macro-evolution (why RL evolved from DP toward preference learning), while this one offers a micro-engineering perspective (the specific principles and design motivations behind each mechanism).
+
+---
+
+## 0. Overview: RL Is Not a Clean Supervised Learning Problem
+
+Supervised learning typically has a relatively clear structure: a fixed data distribution, explicit labels, and an explicit loss. Reinforcement learning is not like that.
+
+In RL, the policy determines sampling, sampling determines the data distribution, the data distribution determines the estimation of Q / advantage, and Q / advantage in turn updates the policy. Once the policy changes, the future sampling distribution also changes.
+
+Therefore, the core of RL is not "optimizing a clean loss given fixed data," but rather continuously handling sampling bias, estimation bias, and optimization stability within a dynamic closed loop.
+
+RL can be understood as:
+
+```text
+On a constantly changing data distribution, using biased sampled data, estimate long-term returns, and optimize the next round's sampling strategy.
+```
+
+Consequently, TD, Bellman, Q max, argmax, entropy, importance sampling, clipping, replay buffer, target network, double Q, actor-critic, PPO, SAC -- these are not isolated tricks. They all address the same problem:
+
+```text
+How to stably optimize a biased objective under biased sampling.
+```
+
+---
+
+## 1. Understanding from the Loss Organization Perspective: MSE -> Entropy -> Log Maximum Likelihood
+
+### 1.1 Value-based Methods: Organizing RL as MSE Regression
+
+DQN / Q-learning methods essentially turn RL into a regression problem. The goal is to make the current Q approximate the Bellman target:
+
+```text
+Q(s, a) ≈ r + γ max_a' Q_target(s', a')
+```
+
+So the loss can be written as:
+
+```text
+L = (Q(s,a) - y)^2
+
+y = r + γ max_a' Q_target(s', a')
+```
+
+This looks like supervised learning, but the key difference is: the label `y` here is not directly given by the external world, but computed by the model itself through Bellman bootstrap and max Q.
+
+In other words:
+
+```text
+The model creates its own labels, then fits those labels.
+```
+
+This is the core characteristic of TD learning. It is not ordinary MSE, but self-bootstrapping regression.
+
+This structure introduces two problems:
+
+1. The target itself is noisy.
+2. max / argmax amplifies noise.
+
+Therefore, the MSE loss in value-based RL is not equivalent to MSE in ordinary supervised learning. Its labels are dynamic, model-dependent, and biased.
+
+### 1.2 Why Q Max Tends to Overestimate
+
+The key issue lies in:
+
+```text
+max_a Q(s, a)
+```
+
+If the Q estimate for each action has noise:
+
+```text
+Q_hat(a) = Q_true(a) + noise(a)
+```
+
+Then when taking the max, actions whose values are overestimated by noise are more likely to be selected. Therefore, in general:
+
+```text
+E[max Q_hat] > max E[Q_hat]
+```
+
+This is the source of Q overestimation.
+
+It is not a problem unique to DQN. As long as an algorithm relies on max Q, argmax Q, or advantage ranking, it faces a similar issue. The difference is merely that different algorithms mitigate it in different ways.
+
+### 1.3 Double DQN / TD3: Stabilizing the MSE Target
+
+The core idea of Double DQN is to separate action selection from value evaluation.
+
+Original DQN:
+
+```text
+y = r + γ max_a Q_target(s', a)
+```
+
+Double DQN:
+
+```text
+a* = argmax_a Q_online(s', a)
+
+y = r + γ Q_target(s', a*)
+```
+
+It does not completely eliminate bias, but reduces the overestimation caused by "the same noisy Q being responsible for both selection and evaluation."
+
+TD3 does something similar in continuous action spaces. It uses two critics and takes the smaller value as the target:
+
+```text
+y = r + γ min(Q1, Q2)
+```
+
+This is a conservative estimate, designed to counteract the actor's excessive exploitation of critic errors.
+
+### 1.4 Policy Gradient: From MSE to Log Maximum Likelihood
+
+Policy gradient no longer first learns a Q and then derives actions via argmax, but instead directly optimizes the policy.
+
+The objective can be written as:
+
+```text
+J(θ) = E[return]
+```
+
+Through the policy gradient theorem, the gradient can be written as:
+
+```text
+∇J(θ) = E[∇ log πθ(a|s) · A(s,a)]
+```
+
+Therefore the loss is often organized as:
+
+```text
+L = - log πθ(a|s) · A(s,a)
+```
+
+This closely resembles weighted maximum likelihood:
+
+```text
+Good actions: increase probability.
+Bad actions: decrease probability.
+```
+
+So from the loss organization perspective, policy gradient shifts from MSE regression of Q to weighted MLE of action probability.
+
+This is an important philosophical change.
+
+The Q-learning approach is:
+
+```text
+I first estimate a Q landscape, then select actions via argmax.
+```
+
+The policy gradient approach is:
+
+```text
+I directly adjust the sampling distribution to make good actions more likely to be sampled.
+```
+
+This is the shift from value-first to policy-first.
+
+### 1.5 Policy Gradient and Maximum Likelihood: From Unweighted MLE to Weighted MLE
+
+Maximum likelihood estimation is essentially: using statistical behavior to estimate parameters.
+
+In ordinary supervised learning / behavior cloning, if the data is:
+
+```text
+(s_i, a_i)
+```
+
+Maximum likelihood is maximizing:
+
+```text
+Σ log πθ(a_i | s_i)
+```
+
+Its meaning is:
+
+```text
+Make the model more likely to generate the actions that appeared in the data.
+```
+
+In this most basic MLE, each statistical sample has equal default weight. As long as an action appeared in the data, the model tends to increase its probability.
+
+So the problem with ordinary MLE / behavior cloning is:
+
+```text
+It only knows "a human/historical policy did this," but not "whether doing this is good or bad."
+```
+
+Policy gradient adds a weight on top of this. It does not simply maximize:
+
+```text
+log πθ(a|s)
+```
+
+But rather maximizes a weighted log likelihood:
+
+```text
+A(s,a) · log πθ(a|s)
+```
+
+Or from the loss perspective:
+
+```text
+L = - A(s,a) · log πθ(a|s)
+```
+
+Here the advantage / return serves as the weight.
+
+Therefore policy gradient can be understood as:
+
+```text
+Weighted maximum log likelihood.
+```
+
+Ordinary maximum likelihood is:
+
+```text
+This action appeared in the data, so increase its probability.
+```
+
+Policy gradient is:
+
+```text
+This action appeared in the data, and it brought higher returns, so increase its probability by a larger amount.
+```
+
+This can be compressed into one sentence:
+
+```text
+MLE models behavioral frequency; Policy Gradient models behavioral frequency with preference weights.
+```
+
+### 1.6 Entropy: Not a Decorative Term, but a Sampling Distribution Control Term
+
+PPO / SAC frequently include an entropy bonus. Its role is not simply "encouraging randomness," but controlling the policy from collapsing too quickly.
+
+From a distributional perspective, when entropy is maximized, the policy is closer to a uniform distribution. When entropy is small, the policy is sharper and closer to a deterministic choice.
+
+So the entropy term essentially encourages:
+
+```text
+Do not let the policy too quickly become an extremely biased distribution.
+```
+
+Without entropy, policy gradient would tend to quickly concentrate probability on actions with currently high advantage. This would lead to:
+
+```text
+Policy concentrates too quickly on a few actions
+-> Sampling narrows
+-> Data diversity decreases
+-> Q / advantage estimates become more biased
+-> Training more easily gets trapped in local optima
+```
+
+So entropy is a form of sampling distribution regularization.
+
+More precisely, policy optimization actually involves two forces:
+
+```text
+Preference term: increase probability of high-advantage actions.
+Entropy term: keep the distribution from becoming too sharp, pulling toward uniformity.
+```
+
+Therefore, the final learned policy is neither a purely uniform distribution nor a complete preference collapse, but strikes a balance between the two:
+
+```text
+Final policy = equilibrium between preference distribution and uniform distribution.
+```
+
+SAC goes further by directly writing the objective as:
+
+```text
+maximize reward + entropy
+```
+
+This means exploration is no longer an externally appended trick, but part of the objective function.
+
+From the loss organization perspective, it can be understood as:
+
+```text
+MSE: fit the Bellman target.
+Weighted log π: weight behavioral likelihood by reward / advantage.
+Entropy: pull the policy back from excessive preference toward a more uniform distribution.
+```
+
+These three correspond to three layers of RL:
+
+```text
+value estimation
+preference-weighted behavior modeling
+sampling diversity control
+```
+
+---
+
+## 2. Determining On-Policy / Off-Policy / Near On-Policy from First Principles
+
+### 2.1 Don't Start by Memorizing Algorithm Names -- First Look at "Where Does the Data Come From"
+
+To determine whether an algorithm is on-policy or off-policy, the first step is not to check whether it is called PPO, DQN, or SAC, but to ask:
+
+```text
+For this parameter update, was the data generated by the policy currently being optimized?
+```
+
+More specifically, check whether two chains are consistent:
+
+```text
+Sampling chain: which policy selected the actions in the data?
+Optimization chain: which policy / Q target is being optimized during this update?
+```
+
+If the policy that sampled the actions and the policy currently being optimized are the same, or approximately the same, then it is on-policy / near on-policy.
+
+If the sampled actions come from an old policy, historical replay buffer, human data, other controllers, or any behavior policy, and the current algorithm can still use this data to update its own Q / policy, then it is off-policy.
+
+Core criterion:
+
+```text
+It is not just about "whether there is historical data," but "whether the action distribution in the historical data must equal the current policy's action distribution."
+```
+
+### 2.2 First-Principles Criterion
+
+```text
+If the loss / target requires a ~ π_current(a|s), it is on-policy.
+
+If the loss / target can accept a ~ μ(a|s), where μ is any behavior policy, it is off-policy.
+
+If the loss can accept a ~ π_old(a|s), but requires π_old and π_current to not differ too much, it is near on-policy.
+```
+
+Here:
+
+```text
+π_current = the policy currently being optimized
+π_old     = the old policy used during the most recent sampling
+μ         = any behavior policy, which can be a historical policy, random policy, human policy, rule-based controller, or replay buffer source
+```
+
+The real criterion is not "whether there is a replay buffer," but:
+
+```text
+Does the update formula require the data actions to come from the current policy?
+```
+
+### 2.3 Why the Original Form of Policy Gradient Is On-Policy
+
+The core form of policy gradient is:
+
+```text
+∇J(θ) = E_{s,a ~ πθ}[∇ log πθ(a|s) · A^{πθ}(s,a)]
+```
+
+Note the sampling distribution under the expectation:
+
+```text
+s,a ~ πθ
+```
+
+This means the gradient formula itself requires the actions to be sampled by the current policy πθ.
+
+Therefore, the original policy gradient is on-policy.
+
+If those actions were not sampled by the current policy, but by a much older policy or a different strategy, then:
+
+```text
+log πθ(a|s) · A(s,a)
+```
+
+This weighted maximum likelihood is no longer an unbiased estimate of the original policy gradient.
+
+So original PG / A2C / A3C are on-policy, not because of their names, but because their gradient derivation requires:
+
+```text
+a must come from the current πθ's sampling distribution.
+```
+
+### 2.4 Why Q-learning / DQN Is Off-Policy
+
+The core target of Q-learning is:
+
+```text
+y = r + γ max_a' Q(s', a')
+```
+
+Note that this does not require the actions in the replay buffer to be selected by the current policy.
+
+The goal of Q-learning is not to directly imitate the behavior policy, but to learn:
+
+```text
+After executing action a in state s, if the future always follows a greedy policy, what is the long-term return.
+```
+
+The action `a` in the data only tells us:
+
+```text
+I once performed a in s, and observed r and s'.
+```
+
+And the future actions in the target do not follow the historical behavior policy, but directly use:
+
+```text
+max_a' Q(s', a')
+```
+
+Therefore Q-learning can learn the target policy independently of the sampling policy -- this is the fundamental reason it is off-policy.
+
+### 2.5 Why PPO Is Near On-Policy
+
+PPO's data typically comes from the most recent old policy:
+
+```text
+a ~ π_old(a|s)
+```
+
+But the update targets the current policy:
+
+```text
+πθ(a|s)
+```
+
+Yet PPO is not fully off-policy, because it does not allow old data and the current policy to diverge too much. It uses the importance ratio:
+
+```text
+r(θ) = πθ(a|s) / π_old(a|s)
+```
+
+Then clips:
+
+```text
+clip(r, 1-ε, 1+ε)
+```
+
+This means:
+
+```text
+I can use data from the most recent old policy.
+But if the current policy and old policy diverge too much, the update weight for that data point will be limited.
+```
+
+Therefore, the precise understanding of PPO is:
+
+```text
+It is not purely on-policy, but near on-policy.
+It allows limited historical data reuse, but constrains distribution shift through ratio clipping.
+```
+
+### 2.6 Why DDPG / TD3 / SAC Are Off-Policy
+
+DDPG, TD3, and SAC all typically use a replay buffer.
+
+But the more fundamental reason is: their critics can learn Bellman targets from historical transitions.
+
+For example, the critic target of DDPG / TD3 is similar to:
+
+```text
+y = r + γ Q_target(s', μ_target(s'))
+```
+
+During the current update, this does not require `a` to be generated by the current actor μθ.
+
+SAC is similar. SAC's critic can learn the soft Bellman target from the replay buffer, and the actor then optimizes the entropy-augmented objective. It does not require the actions in the replay buffer to come from the current policy, so it is also off-policy.
+
+### 2.7 Quick Reference Table
+
+| Algorithm | Where do the actions in the data come from | Does the update require actions from the current policy | Verdict |
+|---|---|---|---|
+| REINFORCE | Current policy | Yes | On-policy |
+| A2C / A3C | Current policy | Yes | On-policy |
+| PPO | Most recent old policy | Approximately required, needs ratio/clip control | Near on-policy |
+| TRPO | Most recent old policy | Approximately required, needs trust region control | Near on-policy |
+| Q-learning | Any behavior policy | No | Off-policy |
+| DQN | Replay buffer / old policy / ε-greedy | No | Off-policy |
+| Double DQN | Replay buffer / old policy / ε-greedy | No | Off-policy |
+| DDPG | Replay buffer / old actor + noise | No | Off-policy |
+| TD3 | Replay buffer / old actor + noise | No | Off-policy |
+| SAC | Replay buffer / historical stochastic policy | No | Off-policy |
+
+### 2.8 The Most Compressed Decision Logic
+
+```text
+If the update formula requires sample actions to be drawn from the current policy, it is on-policy.
+If the update formula can use any historical actions, as long as there is (s,a,r,s'), it is off-policy.
+If it can only use actions from the most recent old policy, and must constrain the difference between old and new policies, it is near on-policy.
+```
+
+Core:
+
+```text
+Whether the action distribution in historical data is allowed to be inconsistent with the policy distribution currently being optimized.
+```
+
+---
+
+## 3. Understanding from Exploration / Exploitation: Why Argmax Needs Randomness
+
+### 3.1 The Fundamental Problem with Greedy
+
+If you directly use:
+
+```text
+a = argmax_a Q(s,a)
+```
+
+Then the policy quickly becomes a deterministic strategy.
+
+The problem is that Q itself has not been accurately estimated in the early stages, but argmax is already forcefully selecting. This converts estimation noise directly into sampling bias.
+
+The typical process is:
+
+```text
+Early Q has noise
+-> argmax selects an action overestimated by noise
+-> policy prematurely biases toward it
+-> other actions lose the chance to be sampled
+-> data distribution narrows
+-> Q becomes harder to correct
+```
+
+So the problem with greedy is not simply "too greedy," but:
+
+```text
+Greedy converts estimation noise into sampling bias.
+```
+
+### 3.2 ε-greedy: Adding Randomness to Argmax
+
+DQN commonly uses ε-greedy:
+
+```text
+With probability 1-ε, select argmax Q.
+With probability ε, select a random action.
+```
+
+This amounts to exploitation most of the time, exploration a small fraction of the time.
+
+The problem it solves is: do not let early noisy argmax completely control the data distribution.
+
+### 3.3 Why Some Approaches Use a Uniform Distribution Target
+
+In some exploration designs, action sampling is pushed closer to a uniform distribution, or the policy is prevented from becoming too sharp.
+
+The reason is:
+
+```text
+If the policy concentrates on a few actions too early, the Q values of other actions can never be accurately estimated.
+```
+
+From a statistical perspective:
+
+```text
+Without sampling, there is no estimation.
+Without coverage, there is no generalization guarantee.
+```
+
+So the significance of uniform exploration is not "being random for the sake of randomness," but first ensuring sufficient coverage of the action space, and only then talking about optimization.
+
+### 3.4 Entropy Is Softer Than ε-greedy
+
+ε-greedy is a hard rule: either greedy or random.
+
+Entropy is a soft constraint: letting the policy maintain a certain level of randomness on its own.
+
+SAC goes further by directly changing the objective to:
+
+```text
+maximize reward + entropy
+```
+
+This means exploration is no longer an externally appended trick, but part of the objective function.
+
+Sampling diversity itself is part of the optimization objective.
+
+---
+
+## 4. Understanding from Data Utilization: Theoretical vs. Engineering Utilization
+
+### 4.1 Theoretical Utilization
+
+Theoretically, off-policy methods have higher data utilization because data in the replay buffer can be reused repeatedly.
+
+```text
+A single transition can be trained on many times.
+```
+
+Therefore, DQN, DDPG, TD3, SAC and similar methods typically have higher sample efficiency than purely on-policy methods.
+
+The problem with on-policy is that data is too tightly bound to the current policy. Once the policy is updated, old data quickly becomes stale. Hence, theoretical sample utilization is low.
+
+### 4.2 Engineering Utilization Does Not Equal Theoretical Utilization
+
+In engineering practice, data utilization also depends on many factors:
+
+```text
+Whether training is stable.
+Whether hyperparameter tuning is difficult.
+Whether parallel sampling is easy.
+Whether results are reproducible.
+Whether the method is sensitive to hyperparameters.
+Whether safe sampling in real systems is possible.
+```
+
+For example, PPO's theoretical sample efficiency is lower than SAC's, but PPO is very stable in engineering, easy to tune, and suitable for large-scale parallelism. Therefore, it is frequently used in robotics, RLHF, and simulation systems.
+
+SAC theoretically has high sample efficiency, but it also has engineering costs, such as complex critic training, temperature tuning, Q bias, and replay distribution control.
+
+An important distinction is:
+
+```text
+Theoretical utilization = how many times each sample can be used by the optimizer.
+Engineering utilization = given the same engineering effort, whether you can stably obtain a good policy.
+```
+
+Sometimes, high theoretical utilization does not mean high engineering efficiency. If the off-policy Q diverges, samples in the replay buffer being reused many times is meaningless.
+
+---
+
+## 5. From Greedy to Stable Greedy, Then to Abandoning Argmax
+
+### 5.1 Initially: Direct Greedy
+
+The core action selection in Q-learning is:
+
+```text
+a = argmax Q(s,a)
+```
+
+This is the most direct form of exploitation.
+
+But argmax is a very strong nonlinear function. It amplifies Q estimation errors. As long as Q has the slightest noise, argmax may select incorrectly. And once it selects incorrectly, the subsequent sampling distribution is also affected.
+
+### 5.2 Methods for Stabilizing Greedy
+
+To prevent greedy from collapsing so easily, subsequent algorithms introduced many stabilization techniques.
+
+**DQN** uses three key types of mechanisms:
+
+```text
+Replay: break correlations, improve data reuse.
+Target network: stabilize the bootstrap target.
+ε-greedy: avoid premature sampling collapse.
+```
+
+**Double DQN** separates action selection from value evaluation, reducing overestimation from max over noisy Q.
+
+**Dueling DQN** decomposes Q into:
+
+```text
+Q(s,a) = V(s) + A(s,a)
+```
+
+This makes the network architecture better at expressing "how good is this state itself" and "how much better is this action relative to other actions."
+
+**TD3** addresses greedy actors in continuous action spaces by introducing:
+
+```text
+double critic
+delayed policy update
+target policy smoothing
+```
+
+The essence of all these methods is to prevent the actor from excessively exploiting the critic's errors.
+
+### 5.3 Why Many Methods Eventually Abandon Hard Argmax
+
+The direction of Policy Gradient, PPO, and SAC is:
+
+```text
+No longer explicitly using hard argmax to select actions, but instead directly optimizing the policy distribution.
+```
+
+That is, moving from:
+
+```text
+First learn Q, then argmax.
+```
+
+To:
+
+```text
+Directly learn π(a|s).
+```
+
+This avoids having the strong nonlinear argmax operation directly dominate training.
+
+PPO uses advantage-weighted log π. SAC simultaneously maximizes reward and entropy. Their common thread is transforming action selection from hard argmax into soft distribution optimization.
+
+This is the evolution from greedy to soft policy.
+
+---
+
+## 6. Understanding from a Bias Optimization Perspective
+
+### 6.1 RL Does Not Pursue Complete Unbiasedness -- It Manages Bias
+
+It is very difficult to achieve a truly unbiased optimization process in RL, because sampling, estimation, and target construction are all biased.
+
+The main sources of bias include:
+
+```text
+sampling bias
+bootstrapping bias
+max / argmax bias
+function approximation bias
+replay buffer distribution bias
+reward design bias
+policy-induced data bias
+```
+
+So RL is not doing "find the true objective, then optimize without bias," but rather:
+
+```text
+Among a bunch of biases, choose a bias structure that is more stable and controllable in engineering.
+```
+
+### 6.2 Q-learning's Bias
+
+Q-learning's bias mainly comes from:
+
+```text
+max Q target
+bootstrap
+off-policy replay
+```
+
+Its advantage is high data utilization; its disadvantage is susceptibility to overestimation and being misled by erroneous Q.
+
+So subsequent methods continuously correct it:
+
+```text
+target network
+Double Q
+clipped double Q
+conservative Q
+```
+
+These all belong to bias control.
+
+### 6.3 Policy Gradient's Bias
+
+Policy gradient avoids hard argmax, but it has its own problems: high variance, sample inefficiency, and noisy advantage estimates.
+
+So it uses baseline, GAE, critic, advantage normalization, entropy, clipping, and other methods to control variance and update bias.
+
+PPO's clipping is essentially intentionally introducing bias. It prevents the importance ratio of certain samples from becoming too large, which means the gradient does not exactly equal the true policy gradient, but it is more stable in engineering.
+
+So PPO is a typical case of:
+
+```text
+Trading bias for stability.
+```
+
+### 6.4 SAC's Bias Structure
+
+What makes SAC more elegant is that it acknowledges exploration is not an extra trick, but should be part of the objective function.
+
+It optimizes:
+
+```text
+reward + entropy
+```
+
+This itself is a biased objective. It is not raw reward maximization, but maximization of entropy-regularized reward.
+
+But this bias is intentionally designed. The benefit is that the policy is less likely to collapse, Q learning is smoother, and exploration is more natural.
+
+So SAC's bias can be understood as:
+
+```text
+Trading a soft objective for stable exploration and better data coverage.
+```
+
+---
+
+## 7. Understanding from a Compression Perspective: Q Is Value Compression, Policy Is Preference Compression
+
+### 7.1 Q Function: Compression of Sparse Rewards / Long-term Value
+
+The Q function can be understood as a compressor. It compresses complex future rollouts, sparse rewards, and delayed feedback into a scalar:
+
+```text
+Q(s,a) = compressed representation of long-term returns after executing action a in state s.
+```
+
+Q is not a simple "immediate good/bad judgment," but a compression of future value:
+
+```text
+Sparse rewards
+-> Multi-step rollouts
+-> Discounted cumulative returns
+-> Q(s,a)
+```
+
+### 7.2 Policy: Compression of Preferences
+
+Policy is also a compressor, but it compresses preferences rather than values.
+
+If it is a stochastic policy:
+
+```text
+π(a|s) = action preference distribution
+```
+
+If it is a deterministic policy:
+
+```text
+a = μ(s) = compressing preferences into the single most preferred action
+```
+
+### 7.3 Q and Policy Compress Different Objects
+
+```text
+Q compresses: how much is this action worth in the future.     -> value compression
+Policy compresses: how I prefer to choose in this state.       -> preference compression
+```
+
+Q is more like an evaluator; Policy is more like a decision-maker.
+
+### 7.4 Why Q-based Methods Need Argmax
+
+If you only have Q, it is just value compression, not yet final behavior. To go from Q to action, you typically need one more step:
+
+```text
+a = argmax_a Q(s,a)
+```
+
+In other words, Q-based methods: first compress value, then extract preferences from value via argmax.
+
+But the problem lies precisely here: argmax is an extremely hard preference extractor. It amplifies small errors in Q into large differences in behavioral choices.
+
+### 7.5 Why Policy-based Methods Directly Optimize Preferences
+
+Policy gradient / PPO / SAC do not necessarily require first learning a complete Q landscape and then selecting actions via argmax; instead, they directly optimize the policy distribution.
+
+```text
+Directly compress preferences, rather than first compressing value and then extracting preferences.
+```
+
+### 7.6 Actor-Critic: Value Compression and Preference Compression Working Together
+
+The Actor-Critic architecture can be understood as simultaneously maintaining two compressors:
+
+```text
+Critic: compresses value / advantage.  ->  Is this action good? How much better?
+Actor: compresses preference / behavior.  ->  Based on the good/bad signal, how should I tend to choose in the future?
+```
+
+So Actor-Critic is not simply "one network selects actions, another network scores them," but rather: the value compressor guides the preference compressor.
+
+### 7.7 Re-understanding Several Algorithms from This Perspective
+
+| Algorithm | Compression target | Decision method | Core risk |
+|---|---|---|---|
+| Q-learning / DQN | Compress long-term value Q | Extract preferences via argmax | Q noise amplified by argmax |
+| Double DQN / TD3 | More stably compress value | More conservatively extract preferences | Underestimation or slower learning |
+| Policy Gradient | Directly compress preferences π | Sample from policy | High variance, low sample efficiency |
+| PPO | Stably compress preferences π | Limit the magnitude of preference updates | May be overly conservative |
+| SAC | Compress soft preferences | reward + entropy | Objective rewritten by entropy bias |
+| Actor-Critic | Q/A compresses value, Actor compresses preferences | Critic guides actor | Two compressors can contaminate each other |
+
+### 7.8 The Most Refined Expression
+
+```text
+Q is the compression of sparse rewards and long-term value.
+Policy is the compression of behavioral preferences and sampling tendencies.
+```
+
+Value-based methods: first compress value, then extract preferences from value.
+
+Policy-based methods: directly compress preferences, then continuously refine preferences through sampling and feedback.
+
+Actor-Critic: use the value compressor to guide the preference compressor.
+
+This also explains why RL has gradually moved from hard argmax toward soft policy:
+
+```text
+Because hard argmax is a fragile conversion from value compression to preference compression.
+While soft policy directly treats preferences as a learnable object.
+```
+
+---
+
+## 8. Understanding from the Action Modeling Perspective: Discrete Actions, Continuous Actions, Deterministic vs. Stochastic
+
+### 8.1 Discrete Actions: Can Be Explicitly Enumerated, So Argmax Is Easy to Use
+
+In discrete action spaces, actions form a finite set:
+
+```text
+A = {a1, a2, a3, ..., ak}
+```
+
+In this case, Q-learning is natural because you can estimate a Q value for each action and directly argmax at decision time.
+
+DQN uses exactly this structure. The neural network takes state as input and outputs the Q value for each discrete action:
+
+```text
+state → network → [Q(s,a1), Q(s,a2), ..., Q(s,ak)]
+```
+
+The key convenience of discrete actions is that argmax can be computed directly. The downside is that if the number of actions is very large or continuous, argmax is no longer straightforward.
+
+### 8.2 Continuous Actions: Cannot Be Enumerated, So an Actor Is Needed
+
+In continuous action spaces, actions are not a finite set but continuous variables:
+
+```text
+a ∈ R^n
+```
+
+Now argmax becomes a continuous optimization problem -- finding the action that maximizes Q in a continuous action space at each decision step -- which is typically infeasible.
+
+So in continuous control, an actor is often introduced:
+
+```text
+a = μθ(s)
+```
+
+The actor directly outputs an action, effectively using a network to approximate argmax_a Q(s,a).
+
+DDPG follows this idea: the Critic learns Q(s,a), the Actor learns μ(s), making Q(s, μ(s)) as large as possible.
+
+```text
+In continuous action spaces, the actor is a function approximation of argmax.
+```
+
+### 8.3 Policy Modeling for Discrete Actions
+
+For discrete actions, the policy can be modeled as a categorical distribution:
+
+```text
+state → network → logits → softmax → action probabilities
+```
+
+At sampling time, an action is drawn from the categorical distribution.
+
+### 8.4 Policy Modeling for Continuous Actions
+
+Continuous actions are typically modeled as parameterized distributions, such as Gaussian:
+
+```text
+π(a|s) = Normal(μθ(s), σθ(s))
+```
+
+The network outputs the mean and variance:
+
+```text
+state → network → mean, std → sample action
+```
+
+The mean represents the center of preference; std represents the exploration range. Gaussian policy is a common form in SAC / PPO for continuous control.
+
+### 8.5 Deterministic Policy vs Stochastic Policy
+
+**Deterministic policy**: `a = μθ(s)`
+
+* Pros: stable execution, simple inference, suitable for continuous control.
+* Cons: weak exploration capability, prone to premature convergence, prone to exploiting critic errors.
+* Representatives: DDPG / TD3. Usually requires additional exploration noise.
+
+**Stochastic policy**: `a ~ πθ(a|s)`
+
+* Pros: naturally includes exploration, can use log probability for policy gradient, can use entropy to control distribution shape.
+* Cons: higher variance, training more dependent on sampling.
+* Representatives: PPO / SAC.
+
+### 8.6 The Evolutionary Logic from Deterministic to Stochastic
+
+Early control problems often favored deterministic approaches -- given a state, output a single optimal action.
+
+But in RL, the policy simultaneously serves two roles:
+
+```text
+1. Decision-maker: what to do right now.
+2. Sampler: what data to see in the future.
+```
+
+If the policy is deterministic, it is clear as a decision-maker but impoverished as a sampler. It causes the data distribution to narrow quickly.
+
+So RL's gradual shift toward stochastic policy is because:
+
+```text
+RL is not just about selecting the current optimal action, but also about maintaining the data coverage needed for future learning.
+```
+
+From the compression perspective, a stochastic policy is a more complete preference compression -- preferences are not necessarily a single point, but can be a distribution:
+
+```text
+stochastic policy = soft preference representation
+deterministic policy = hard preference representation
+```
+
+---
+
+## 9. From DP to RL: Progressively Relaxing Assumptions, Progressively Changing Optimization Methods
+
+### 9.1 DP's God's-Eye View Assumption
+
+Dynamic Programming assumes you know the complete MDP:
+
+```text
+State set S
+Action set A
+State transition probability P(s'|s,a)
+Reward function R(s,a)
+Discount factor γ
+```
+
+DP has a near "god's-eye view" -- knowing how the environment transitions, knowing what reward each action brings, and being able to systematically perform Bellman backups over all states.
+
+### 9.2 First Relaxation: Not Knowing the Full Environment, Only Able to Sample
+
+In practice, P(s'|s,a) and R(s,a) are usually unknown; you can only obtain samples (s, a, r, s') through interaction with the environment.
+
+The Bellman backup changes from an exact expectation to a sampled estimate. This is the origin of TD learning.
+
+### 9.3 Second Relaxation: Cannot Traverse All States, Must Use Function Approximation
+
+Classical DP can update every state / action in a tabular state space. Real state spaces are enormous, even continuous, and cannot maintain a complete table.
+
+So function approximation is introduced:
+
+```text
+V(s) ≈ Vθ(s)
+Q(s,a) ≈ Qθ(s,a)
+π(a|s) ≈ πθ(a|s)
+```
+
+The cost is that generalization brings efficiency, but also function approximation bias.
+
+### 9.4 Third Relaxation: Cannot Guarantee Data Comes from the Target Policy
+
+In DP, there is no "data distribution" problem because it directly operates on the model and the full state space.
+
+In RL, sampling is necessary, and sampling is determined by the behavior policy. The data distribution is generated by the policy, and the policy is in turn trained by the data -- this closed loop is one of the essential difficulties of RL.
+
+### 9.5 Fourth Relaxation: From Exact Greedy to Approximate Greedy
+
+In DP, if you know the complete Q, you can directly argmax. But in RL, Q is estimated, with noise, bias, and incompleteness.
+
+Exact greedy becomes approximate greedy, introducing max bias, overestimation, and exploration collapse. This necessitates ε-greedy, Double Q, target network, entropy regularization, soft policy, and other methods.
+
+The essence: since Q is not the true Q from a god's-eye view, you should not fully trust hard argmax.
+
+### 9.6 Fifth Relaxation: From Optimal Control to Preference Optimization
+
+The DP / optimal control approach is: have an environment model -> find the optimal value -> derive the optimal policy.
+
+Later RL approaches like policy gradient / PPO / SAC are more like: no complete model -> obtain behavioral feedback through sampling -> directly optimize the behavior distribution.
+
+This is the shift from "solving an optimal control problem" toward "preference distribution optimization."
+
+### 9.7 The Evolution Chain from DP to RL
+
+```text
+DP:
+Known model + exact Bellman backup + full state traversal + exact greedy
+
+↓ relax environment model
+
+Tabular RL:
+Unknown model + sampled Bellman backup + tabular Q/V
+
+↓ relax state space scale
+
+Deep Q Learning:
+Function-approximated Q + replay + target network + approximate greedy
+
+↓ relax action space
+
+Actor-Critic:
+Actor approximates argmax / policy, critic estimates value
+
+↓ relax hard greedy
+
+Policy Gradient / PPO / SAC:
+Directly optimize stochastic policy, replace hard argmax with preference distribution
+```
+
+### 9.8 What Assumption Each Relaxation Step Changes
+
+| Stage | Original assumption | After relaxation | New problem |
+|---|---|---|---|
+| DP | Known P/R model | Can only sample | Sampling noise |
+| Tabular RL | Can traverse state table | State space huge/continuous | Function approximation bias |
+| Q-learning | Can stably estimate Q | Q has noise | Max overestimation |
+| DQN | Discrete actions enumerable | Continuous actions not enumerable | Need actor |
+| DDPG/TD3 | Deterministic actor suffices | Insufficient exploration | Need noise/entropy |
+| PPO/SAC | Hard greedy is feasible | Hard greedy too fragile | Soft policy / preference optimization |
+
+---
+
+## 10. Summary Table: Multiple Threads Combined
+
+| Dimension | Early approach | Problem | Subsequent fix | More advanced direction |
+|---|---|---|---|---|
+| Loss | TD MSE | Self-bootstrapping target, noisy | Target network / double Q | Policy log-likelihood |
+| Action selection | argmax Q | Amplifies Q noise | ε-greedy / double Q | Soft policy |
+| Exploration | Random tricks | Unsystematic | Entropy bonus | Max entropy RL |
+| Data reuse | On-policy, little reuse | Sample waste | Replay buffer | Off-policy actor-critic |
+| Stability | Hard greedy | Prone to collapse | PPO clip / TD3 tricks | Bias-controlled optimization |
+| Bias | Pursuing Bellman target | Overestimate | Clipped / double / conservative | Accept bias, trade for stability |
+
+---
+
+## 11. One-Sentence Summaries of Typical Algorithms
+
+**Q-learning / DQN**: Learn Q via MSE, make decisions via argmax, improve data utilization via replay. The problem is that max Q amplifies estimation errors.
+
+**Double DQN / TD3**: Acknowledge that Q max overestimates, so separate selection from evaluation, or use multiple critics for conservative estimation.
+
+**DDPG**: Extend Q-learning to continuous action spaces, using an actor to approximate argmax Q. The problem is the actor will exploit the critic's errors.
+
+**PPO**: Directly optimize the policy, but constrain the policy from deviating too far from the sampling data. Essentially, it is near on-policy stable policy gradient.
+
+**SAC**: Incorporate entropy into the objective function, using a soft policy to avoid premature greediness. Essentially, it uses a maximum entropy objective to unify exploitation and exploration.
+
+---
+
+## 12. Final Understanding
+
+RL is not simply optimizing a clean loss. RL is optimizing within a closed loop where sampling, value estimation, and decision-making mutually influence each other.
+
+Early methods used MSE + Bellman + max Q. Later it was discovered that max / argmax is too hard, Q estimates are noisy, off-policy replay has distributional bias, and insufficient exploration worsens estimation.
+
+This led to the introduction of random exploration, target network, double Q, entropy, importance sampling, clipping, soft policy, and actor-critic.
+
+In the end, RL's philosophy shifted from:
+
+```text
+Find the optimal Q, then be greedy.
+```
+
+Gradually toward:
+
+```text
+Under biased sampling, control the data distribution, estimation bias, and optimization step size, so that the policy stably improves.
+```
+
+The most refined version is:
+
+```text
+The essence of RL is not argmax.
+The essence of RL is preference optimization under biased sampling.
+```
+
+Or in a more statistical phrasing:
+
+```text
+There is no absolute god's-eye view.
+Your understanding of the environment depends on the data you sampled, your sampling preferences, and which biases you are willing to accept.
+```
