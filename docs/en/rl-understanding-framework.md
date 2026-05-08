@@ -990,6 +990,145 @@ Because hard argmax is a fragile conversion from value compression to preference
 While soft policy directly treats preferences as a learnable object.
 ```
 
+### 7.9 Actor-Critic's Entangled Iteration: Alternating Freeze, Alternating Optimize
+
+Actor-Critic training has an easily overlooked but critically important structure: **Actor and Critic are entangled, but each step only optimizes one while treating the other as a constant.**
+
+This is exactly like solving a coupled equation:
+
+```text
+Analogy: solving f(x, y) = 0
+
+x and y are coupled — x's optimal value depends on y, y's optimal depends on x.
+Solving them jointly is hard (or impossible).
+
+Engineering approach: coordinate descent
+  Step 1: Fix y = y_current, optimize x → get x_new
+  Step 2: Fix x = x_new,     optimize y → get y_new
+  Step 3: Go back to Step 1, repeat
+
+Each step only solves for one variable, treating the other as constant.
+Not globally optimal per step, but alternating iteration can converge.
+```
+
+Actor-Critic has exactly this structure:
+
+```text
+Coupling:
+  Q's optimal value depends on π (different policies yield different Q)
+  π's optimal value depends on Q (policy should move toward high Q)
+
+Training: alternating freeze, alternating optimize
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │                                                             │
+  │  Step 1: Update Critic (freeze Actor)                       │
+  │                                                             │
+  │    Actor's parameters frozen, treated as constant            │
+  │    Fit Q / V using data sampled by Actor's current policy    │
+  │                                                             │
+  │    loss_critic = (Q(s,a) - target)²                         │
+  │    Gradient only w.r.t. Critic params; Actor params excluded │
+  │                                                             │
+  │         ┌──────────┐                                        │
+  │         │  Actor   │ ← frozen (constant)                    │
+  │         └──────────┘                                        │
+  │         ┌──────────┐                                        │
+  │         │  Critic  │ ← updating                             │
+  │         └──────────┘                                        │
+  │                                                             │
+  ├─────────────────────────────────────────────────────────────┤
+  │                                                             │
+  │  Step 2: Update Actor (freeze Critic)                       │
+  │                                                             │
+  │    Critic's parameters frozen, treated as constant           │
+  │    Use Critic's Q / advantage to guide Actor adjustment      │
+  │                                                             │
+  │    loss_actor = -Q(s, π(s))  or  -log π(a|s) · A(s,a)      │
+  │    Gradient only w.r.t. Actor params; Critic params excluded │
+  │                                                             │
+  │         ┌──────────┐                                        │
+  │         │  Actor   │ ← updating                             │
+  │         └──────────┘                                        │
+  │         ┌──────────┐                                        │
+  │         │  Critic  │ ← frozen (constant)                    │
+  │         └──────────┘                                        │
+  │                                                             │
+  ├─────────────────────────────────────────────────────────────┤
+  │                                                             │
+  │  Step 3: Go back to Step 1, repeat                          │
+  │                                                             │
+  └─────────────────────────────────────────────────────────────┘
+```
+
+In mathematical terms:
+
+```text
+Critic update:
+  min_φ  L(φ) = (Q_φ(s,a) - y)²
+  where y = r + γ·Q_target(s', π_θ(s'))
+  θ (Actor params) does not participate in ∂L/∂φ
+
+Actor update:
+  min_θ  L(θ) = -Q_φ(s, π_θ(s))     (DDPG/SAC style)
+  or
+  min_θ  L(θ) = -log π_θ(a|s) · A    (PPO style)
+  φ (Critic params) does not participate in ∂L/∂θ
+  (even in DDPG where gradients flow through Q, Q's params are stop_gradient)
+```
+
+This "entangled iteration" structure explains several important phenomena:
+
+**1. Why Actor-Critic can be unstable**
+
+```text
+Coordinate descent converges on convex problems, but Actor-Critic is non-convex.
+
+Two optimizers are chasing each other:
+  Critic chases the data distribution shift caused by Actor changes
+  Actor chases the value landscape shift caused by Critic changes
+
+If one runs too fast and the other can't keep up, the system oscillates or diverges.
+```
+
+**2. Why TD3 uses delayed policy update**
+
+```text
+TD3 makes Critic update more frequently than Actor (e.g., Critic updates 2x, Actor 1x).
+
+Reason: let Critic stabilize first (y converges), then let Actor follow (x optimizes).
+If both update at the same rate, Critic hasn't stabilized but Actor is already chasing —
+the chase direction may be wrong.
+```
+
+**3. Why target networks help**
+
+```text
+Target networks further slow down Critic target changes.
+Like using y_target = 0.995·y_old + 0.005·y_new instead of y_new directly.
+Makes the "constant" more truly constant, reducing oscillation in alternating iteration.
+```
+
+**4. Contrast with pure value-based methods (DQN)**
+
+```text
+DQN has no entanglement — only one Q network, policy is a byproduct of argmax Q.
+No "two networks alternating optimization" problem.
+This is one reason DQN can be more stable in some scenarios.
+Cost: argmax only works for discrete actions, can't handle continuous control.
+```
+
+Most compressed expression:
+
+```text
+Actor-Critic = coordinate descent on a coupled equation
+
+Q and π depend on each other, but each step only optimizes one,
+treating the other as constant.
+An engineering compromise: no global joint solve, only alternating approximation.
+Stability depends on whether the two optimizers' paces are coordinated.
+```
+
 ---
 
 ## 8. Understanding from the Action Modeling Perspective: Discrete Actions, Continuous Actions, Deterministic vs. Stochastic
