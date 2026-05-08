@@ -35,6 +35,23 @@ Or in Q-function form:
 Q^{\ast}(s,a) = \mathbb{E}_{s' \sim P}\bigl[r(s,a) + \gamma\, \max_{a'} Q^{\ast}(s',a')\bigr].
 \end{equation}
 
+\noindent\textbf{What changed from $V$ to $Q$?}
+Compare the two equations carefully.
+$V^{\ast}(s)$ records value per \emph{state}---action is hidden inside the $\max_a$ and the expectation.
+$Q^{\ast}(s,a)$ records value per \emph{state-action pair}---action $a$ is pulled out of the expectation and made an explicit input.
+
+This is a change in bookkeeping granularity:
+\begin{itemize}[nosep]
+    \item $V$: coarse ledger---one entry per state, action randomness is averaged away inside.
+    \item $Q$: fine-grained ledger---one entry per $(s,a)$, action randomness is \emph{eliminated} by conditioning on $a$.
+\end{itemize}
+
+Why does this matter?
+With $V$ alone, choosing the best action requires knowing the transition model $P(s'|s,a)$ and reward $r(s,a)$---you need the model to ``undo'' the averaging and figure out which action led to high value.
+With $Q$, action selection becomes trivial: $a^{\ast} = \arg\max_a Q(s,a)$.
+No model needed.
+This seemingly small shift in bookkeeping---from averaging over actions to conditioning on actions---is what makes model-free control possible.
+
 These equations are mathematically rigorous.
 The Bellman equation \emph{is} the entire optimization---solving it yields the globally optimal policy.
 The problem is not that the Bellman principle is wrong, but that it describes an \textbf{ideal fixed point}, while the training process is not a fixed point.
