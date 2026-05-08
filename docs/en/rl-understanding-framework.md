@@ -26,7 +26,7 @@ How to stably optimize a biased objective under biased sampling.
 
 ---
 
-## 1. Understanding from the Loss Organization Perspective: MSE -> Entropy -> Log Maximum Likelihood
+## 1. Understanding from the Loss Organization Perspective: MSE -> Max Q -> Entropy -> Weighted Log-Likelihood
 
 ### 1.1 Value-based Methods: Organizing RL as MSE Regression
 
@@ -113,7 +113,56 @@ y = r + γ min(Q1, Q2)
 
 This is a conservative estimate, designed to counteract the actor's excessive exploitation of critic errors.
 
-### 1.4 Policy Gradient: From MSE to Log Maximum Likelihood
+### 1.4 Max Q Loss: The Actor's Loss Is Directly Maximizing Q
+
+In value-based methods, the loss is MSE -- making Q approximate the Bellman target. But when the action space is continuous, argmax can't be computed directly, so an actor network is introduced.
+
+The actor's loss is no longer MSE, but an entirely new form -- **directly maximizing Q**:
+
+```text
+L_actor = - Q(s, μ_θ(s))
+```
+
+The actor adjusts parameters θ to make the critic give it the highest possible score.
+
+This is the core idea of DDPG. It can be understood as the continuous version of argmax:
+
+```text
+Discrete action:    a* = argmax_a Q(s,a)          → enumerate all actions, pick the max
+Continuous action:  θ* = argmax_θ Q(s, μ_θ(s))    → use gradient ascent so the actor outputs high-Q actions
+```
+
+So the essence of max Q loss is:
+
+```text
+Turning argmax (a discrete operation) into a differentiable gradient optimization problem.
+```
+
+The actor uses the critic's gradient signal ∇_a Q(s,a) to adjust its output direction.
+
+But max Q loss has a fundamental risk: **the actor will exploit the critic's estimation errors.**
+
+The critic's Q is not the true value -- it has noise and overestimation. If the actor keeps moving toward where Q is highest, it may end up not at truly good actions, but at actions where the critic's estimation error is largest.
+
+This is why TD3 needs so many protective measures:
+
+```text
+double critic + min Q:      suppress overestimation
+delayed policy update:      let critic stabilize first, then update actor
+target policy smoothing:    prevent actor from exploiting sharp peaks in Q
+```
+
+From the loss evolution perspective, max Q loss sits between MSE and policy gradient:
+
+```text
+MSE loss:      Make Q approximate a target         → passive fitting
+Max Q loss:    Make actor output high-Q actions     → actively exploiting the Q landscape
+PG loss:       Make good actions more probable      → directly shaping the distribution
+```
+
+MSE is "I estimate value"; max Q is "I exploit my estimates for decisions"; PG is "I directly optimize decisions."
+
+### 1.5 Policy Gradient: From Max Q to Weighted Log-Likelihood
 
 Policy gradient no longer first learns a Q and then derives actions via argmax, but instead directly optimizes the policy.
 
@@ -218,7 +267,7 @@ optimizer.step()
 
 This is why RL and SL share essentially the same optimization framework -- regardless of whether the loss came first or was constructed afterward, everything ultimately falls into the same loss → backward → update pipeline.
 
-### 1.5 Policy Gradient and Maximum Likelihood: From Unweighted MLE to Weighted MLE
+### 1.6 Policy Gradient and Maximum Likelihood: From Unweighted MLE to Weighted MLE
 
 Maximum likelihood estimation is essentially: using statistical behavior to estimate parameters.
 
@@ -292,7 +341,7 @@ This can be compressed into one sentence:
 MLE models behavioral frequency; Policy Gradient models behavioral frequency with preference weights.
 ```
 
-### 1.6 Entropy: Not a Decorative Term, but a Sampling Distribution Control Term
+### 1.7 Entropy: Not a Decorative Term, but a Sampling Distribution Control Term
 
 PPO / SAC frequently include an entropy bonus. Its role is not simply "encouraging randomness," but controlling the policy from collapsing too quickly.
 

@@ -26,7 +26,7 @@
 
 ---
 
-## 1. 从 loss 组织角度理解：MSE → 熵增 → log 最大似然
+## 1. 从 loss 组织角度理解：MSE → max Q → 熵增 → 加权对数似然
 
 ### 1.1 Value-based 方法：把 RL 组织成 MSE 回归
 
@@ -113,7 +113,56 @@ y = r + γ min(Q1, Q2)
 
 这是一种保守估计，用来对抗 actor 对 critic 错误的过度利用。
 
-### 1.4 Policy Gradient：从 MSE 走向 log 最大似然
+### 1.4 Max Q Loss：Actor 的 loss 就是直接最大化 Q
+
+在 value-based 方法里，loss 是 MSE——让 Q 逼近 Bellman target。但当 action 空间是连续的，argmax 不能直接算，于是引入 actor 网络。
+
+Actor 的 loss 不再是 MSE，而是一个全新的形态——**直接最大化 Q**：
+
+```text
+L_actor = - Q(s, μ_θ(s))
+```
+
+也就是说，actor 调整参数 θ，让 critic 给它打的分尽可能高。
+
+这是 DDPG 的核心思路。它可以理解为 argmax 的连续化：
+
+```text
+离散 action：  a* = argmax_a Q(s,a)          → 枚举所有 action，选最大
+连续 action：  θ* = argmax_θ Q(s, μ_θ(s))    → 用梯度上升让 actor 输出高 Q 的 action
+```
+
+所以 max Q loss 的本质是：
+
+```text
+把 argmax 这个离散操作，变成了一个可微的梯度优化问题。
+```
+
+Actor 通过 critic 的梯度信号 ∇_a Q(s,a) 来调整自己的输出方向。
+
+但 max Q loss 有一个根本风险：**actor 会 exploit critic 的估计误差**。
+
+Critic 的 Q 不是真值，它有噪声和高估。如果 actor 不断朝着 Q 最高的方向走，它可能走到的不是真正好的 action，而是 critic 估计误差最大的 action。
+
+这就是为什么 TD3 要加那么多保护措施：
+
+```text
+double critic + min Q：压制高估
+delayed policy update：让 critic 先稳定，再更新 actor
+target policy smoothing：防止 actor exploit Q 的尖锐峰值
+```
+
+从 loss 演化的角度看，max Q loss 处于 MSE 和 policy gradient 之间：
+
+```text
+MSE loss：    让 Q 逼近 target            → 被动拟合
+Max Q loss：  让 actor 输出高 Q 的 action   → 主动利用 Q landscape
+PG loss：     让好 action 概率变大          → 直接塑造分布
+```
+
+MSE 是"我估值"；max Q 是"我利用估值做决策"；PG 是"我直接优化决策"。
+
+### 1.5 Policy Gradient：从 max Q 走向加权对数似然
 
 Policy gradient 不再先学一个 Q，然后通过 argmax 得到 action，而是直接优化 policy。
 
@@ -218,7 +267,7 @@ optimizer.step()
 
 这就是为什么说 RL 和 SL 的 optimization framework 基本相同——不管 loss 是先有还是后构造的，最终都落入了同一套 loss → backward → update 的流程。
 
-### 1.5 Policy Gradient 和最大似然：从无权重 MLE 到加权 MLE
+### 1.6 Policy Gradient 和最大似然：从无权重 MLE 到加权 MLE
 
 最大似然估计本质上是：使用统计行为来估计参数。
 
@@ -292,7 +341,7 @@ Policy gradient 是：
 MLE 是对行为频率建模；Policy Gradient 是对带偏好权重的行为频率建模。
 ```
 
-### 1.6 Entropy：不是装饰项，而是采样分布控制项
+### 1.7 Entropy：不是装饰项，而是采样分布控制项
 
 PPO / SAC 里经常会出现 entropy bonus。它的作用不是简单"鼓励随机"，而是控制 policy 不要太快塌缩。
 
