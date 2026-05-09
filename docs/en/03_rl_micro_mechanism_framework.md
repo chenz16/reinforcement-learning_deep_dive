@@ -1376,6 +1376,123 @@ This inversion lets PPO / A2C operate without any Q network at all —
 just one V-critic is enough to train the policy.
 ```
 
+### 7.12 Why PPO Works in Industry: Decomposing the Sources of Stability
+
+PPO is the most widely used RL algorithm in industry (robotics, RLHF, simulation training). Its stability comes not from a single trick, but from layered defenses. These layers have a clear hierarchy of importance.
+
+#### Core signal quality: GAE + V-critic (most fundamental)
+
+The original Policy Gradient's problem is the variance of the score term:
+
+```text
+Raw PG:   ∇J = E[∇log π(a|s) · G_t]
+                                 ↑
+                       Monte Carlo return, extremely high variance
+                       one trajectory's quality depends entirely on sampling luck
+```
+
+Evolution chain:
+
+```text
+Step 1: Actor-Critic introduces V baseline
+  ∇J = E[∇log π(a|s) · (Q(s,a) - V(s))]
+     = E[∇log π(a|s) · A(s,a)]
+  Subtract "the state's average level" using V(s)
+  → Only retain "this action's excess return relative to average"
+  → Variance dramatically reduced
+
+Step 2: GAE further optimizes advantage estimation
+  Don't explicitly estimate Q; construct multi-step advantage from V + rollout rewards
+  δ_t = r_t + γV(s_{t+1}) - V(s_t)           ← single-step TD error
+  A^GAE_t = Σ_l (γλ)^l δ_{t+l}                ← weighted multi-step average
+
+  λ=0: single-step TD only → low variance, high bias
+  λ=1: all steps TD → high variance, low bias
+  λ=0.95 (typical): optimal tradeoff in between
+
+  This is what transforms policy gradient from "high-variance sampling estimate"
+  into "a usable, stable optimization problem."
+```
+
+**This is PPO's foundational signal quality** — without GAE + V-critic, no amount of clipping or entropy can help, because the gradient direction itself is noise.
+
+#### Update magnitude control: Clipped Ratio (guardrail)
+
+GAE solves "is the gradient direction accurate?" Clip solves a different problem: "even if the direction is right, stepping too far still crashes."
+
+```text
+r(θ) = π_θ(a|s) / π_old(a|s)        ← importance ratio
+
+L_clip = min(r·A, clip(r, 1-ε, 1+ε)·A)
+
+If r deviates too far from 1 (new and old policy differ too much):
+  → clip limits the loss magnitude
+  → prevents a single update from launching the policy off course
+```
+
+Clip is the simplified version of TRPO's idea. TRPO uses a KL constraint (second-order optimization, complex); PPO uses clipping (first-order, simple). Similar results, much lower engineering cost.
+
+#### Hierarchy of defensive layers
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│            PPO's Layered Stability Defenses                  │
+├──────────────────────┬───────────────────────────────────────┤
+│ Layer                │ Function                              │
+├──────────────────────┼───────────────────────────────────────┤
+│ GAE + V-critic       │ Signal quality: make gradient         │
+│ (most fundamental)   │ direction accurate                    │
+│                      │ Solves PG's core high-variance problem│
+│                      │ Without this, nothing else matters    │
+├──────────────────────┼───────────────────────────────────────┤
+│ Clipped ratio        │ Step size control: don't overshoot    │
+│ (guardrail)          │ Even if direction is right, too far   │
+│                      │ still crashes                         │
+│                      │ Engineering simplification of TRPO    │
+├──────────────────────┼───────────────────────────────────────┤
+│ Near on-policy       │ Data quality: data from recent policy │
+│ (data guarantee)     │ No replay buffer, clean distribution  │
+│                      │ Avoids off-policy distribution drift  │
+├──────────────────────┼───────────────────────────────────────┤
+│ Entropy bonus        │ Exploration guarantee: prevent early  │
+│ (auxiliary)          │ policy collapse                       │
+│                      │ Usually small coefficient in PPO      │
+├──────────────────────┼───────────────────────────────────────┤
+│ Multi-epoch minibatch│ Engineering efficiency: reuse one     │
+│ (engineering)        │ batch multiple times                  │
+│                      │ Simple, parallelizable, easy to tune  │
+└──────────────────────┴───────────────────────────────────────┘
+```
+
+#### Accurate historical attribution
+
+```text
+GAE is NOT PPO's invention — GAE is Schulman 2016, a separate paper.
+The clipped surrogate objective IS PPO's core contribution (Schulman 2017).
+
+PPO's real contribution is assembly:
+  GAE (stable advantage estimation)
+  + clipped ratio (simple step size constraint)
+  + multi-epoch minibatch (engineering-friendly)
+  assembled into an industrially usable algorithm.
+
+Analogy:
+  GAE = engine (provides directional power)
+  Clip = braking system (prevents going off track)
+  PPO = putting both into a car that's easy to drive
+```
+
+#### One-sentence summary
+
+```text
+PPO's clip ratio is an elegant engineering guardrail,
+but what truly transformed policy gradient from "high-variance sampling estimate"
+into a usable optimization problem is the V-critic baseline and GAE advantage estimator.
+
+GAE determines whether the direction is accurate; Clip determines whether each step overshoots.
+Both are necessary, but GAE is more fundamental.
+```
+
 ---
 
 ## 8. Understanding from the Action Modeling Perspective: Discrete Actions, Continuous Actions, Deterministic vs. Stochastic
