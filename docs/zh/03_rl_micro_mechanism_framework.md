@@ -1240,6 +1240,134 @@ Actor 训练时：action 是 "可优化变量" → 梯度流过 action 回到 Ac
 这就是交替迭代中 "固定一个、优化另一个" 的具体实现。
 ```
 
+### 7.11 Advantage：因果倒转——先估 V，再构造 Q
+
+这是一个常被低估但极其重要的思想转变。
+
+#### 传统因果关系：Q 是基本量，V 是派生量
+
+在 Q-learning / DQN 的世界里，Q 是核心：
+
+```text
+基本量：Q(s,a)         ← 显式学习，每个 (s,a) 对一个值
+派生量：V(s) = max_a Q(s,a)   ← 从 Q 算出来
+决策：  a* = argmax_a Q(s,a)  ← 从 Q 提取
+
+因果链：先有 Q → 从 Q 派生 V → 从 Q 选 action
+```
+
+这看起来很自然。但问题是：**Q 要为每个 action 都维护一个独立的估值，维度高，估计方差大，容易被 max 放大噪声。**
+
+#### Advantage 的因果倒转：V 是基本量，Q 是临时构造
+
+Advantage 把因果关系反过来了：
+
+```text
+基本量：V(s)                        ← 只依赖 state，不依赖 action，更稳定
+构造量：A(s,a) = Q(s,a) - V(s)      ← advantage = "这个 action 比平均好多少"
+         ≈ r + γV(s') - V(s)        ← 用 TD 临时算，不需要 Q 网络
+
+因果链：先有 V → 临时构造 A → A 指导 policy 更新
+```
+
+为什么这个倒转很重要？
+
+```text
+1. V(s) 比 Q(s,a) 更容易学
+   - V 只有 state 维度（n 维），Q 有 state×action 维度（n+m 维）
+   - V 是对所有 action 的平均化结果，方差更低
+   - V 不显式依赖 policy 的具体选择
+
+2. Advantage 只关心 action 之间的相对差异
+   - A(s,a) = "这个 action 比平均好多少"
+   - 不需要知道绝对值，只需要知道差值
+   - 相对值比绝对值更容易估准
+
+3. 不需要维护 Q 网络
+   - PPO / A2C 完全不需要 Q 网络
+   - 只有 V-critic + TD advantage
+   - 少了一个网络，简化了训练
+```
+
+#### 历史脉络
+
+Advantage 不是一个人一次发明的，而是分阶段出现：
+
+```text
+1993  Baird "Advantage Updating"
+      首次提出 Q = V + A 的分解
+      动机：连续时间问题中 Q 的差异太小难以学习
+      直接学 A（残差）比学完整 Q 更容易
+
+1999  Sutton et al. Policy Gradient Theorem
+      证明 policy gradient 可以用 Q(s,a) 表示
+      减去 baseline V(s) 不改变期望但减少方差
+      Q(s,a) - V(s) = A(s,a) ← advantage 自然出现
+
+2016  Schulman et al. GAE (Generalized Advantage Estimation)
+      提供 advantage 估计的 bias-variance 权衡
+      A^GAE = Σ (γλ)^t δ_t
+      λ=1 → 高方差无偏（Monte Carlo advantage）
+      λ=0 → 低方差有偏（单步 TD advantage）
+      类似 TD(λ)
+
+2016  Wang et al. Dueling DQN
+      在 Q-learning 架构中用 Q = V + A 分解
+      网络分两条路：一条输出 V(s)，一条输出 A(s,a)
+      在 value-based 方法中应用 advantage
+```
+
+#### 为什么 Advantage 在 policy gradient 中发扬光大，在 Q-learning 中没有？
+
+```text
+在 policy gradient 中（PPO / A2C）：
+  - 本来就需要一个 baseline 来降低方差
+  - V(s) 是天然的 baseline
+  - A = r + γV(s') - V(s) 直接就是 advantage
+  - V-first 的因果关系在这里是最自然的
+  → advantage 成为标配
+
+在 Q-learning 中（DQN）：
+  - Q 本身就是基本量，直接学 Q 更自然
+  - Q = V + A 的分解有可辨识性问题：V 和 A 之间可以任意平移常数
+    （Dueling DQN 用 A - mean(A) 来修补，但这是 heuristic）
+  - 离散 action 空间中 max_a Q 隐含了 V，分解没有必然优势
+  → advantage 只在 Dueling DQN 中作为网络结构使用，没有成为主流
+```
+
+#### 对比总览
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│                  Q-first vs V-first 的因果对比                │
+├──────────────────────┬───────────────────────────────────────┤
+│ Q-first (传统)       │ V-first (advantage)                  │
+├──────────────────────┼───────────────────────────────────────┤
+│ 基本量：Q(s,a)       │ 基本量：V(s)                          │
+│ 高维 (state×action)  │ 低维 (state only)                    │
+│ 方差大               │ 方差小                                │
+│ max 放大噪声         │ 不受 max 影响                         │
+│ V = max Q (派生)     │ A = r+γV(s')-V(s) (临时构造)         │
+│ 需要 Q 网络          │ 不需要 Q 网络                         │
+│ 代表：DQN, DDPG      │ 代表：PPO, A2C                       │
+│ 适用：off-policy      │ 适用：on/near on-policy               │
+└──────────────────────┴───────────────────────────────────────┘
+```
+
+#### 一句话总结
+
+```text
+Advantage 的本质不是一个 "trick"——
+它是一次因果关系的倒转：
+从 "先学 Q，再派生 V" 变成 "先学 V，再临时构造 advantage"。
+
+V 更稳定、更低维、不依赖具体 action。
+Advantage 只关心 action 之间的相对好坏，不关心绝对值。
+
+这个倒转让 PPO / A2C 可以完全不需要 Q 网络，
+只用一个 V-critic 就能训练 policy。
+```
+
 ---
 
 ## 8. 从 action 建模角度理解：离散 action、连续 action、确定性与随机性

@@ -1246,6 +1246,136 @@ The same action plays different roles in different phases —
 this is the concrete implementation of "freeze one, optimize the other" in alternating iteration.
 ```
 
+### 7.11 Advantage: Causal Inversion — Estimate V First, Construct Q On-the-Fly
+
+This is an often underestimated but critically important conceptual shift.
+
+#### Traditional causality: Q is primary, V is derived
+
+In Q-learning / DQN, Q is the core:
+
+```text
+Primary:  Q(s,a)              ← explicitly learned, one value per (s,a) pair
+Derived:  V(s) = max_a Q(s,a) ← computed from Q
+Decision: a* = argmax_a Q(s,a) ← extracted from Q
+
+Causal chain: Q first → derive V from Q → select action from Q
+```
+
+This seems natural. But the problem: **Q maintains a separate estimate for every action, high-dimensional, high variance, easily amplified by max.**
+
+#### Advantage inverts the causality: V is primary, Q is constructed on-the-fly
+
+Advantage reverses the causal direction:
+
+```text
+Primary:     V(s)                          ← depends only on state, not action, more stable
+Constructed: A(s,a) = Q(s,a) - V(s)        ← "how much better is this action than average"
+              ≈ r + γV(s') - V(s)           ← computed via TD on-the-fly, no Q network needed
+
+Causal chain: V first → construct A on-the-fly → A guides policy update
+```
+
+Why does this inversion matter?
+
+```text
+1. V(s) is easier to learn than Q(s,a)
+   - V has only state dimensions (n-dim), Q has state×action dimensions (n+m dim)
+   - V averages over all actions, lower variance
+   - V doesn't explicitly depend on the policy's specific choices
+
+2. Advantage only cares about relative differences between actions
+   - A(s,a) = "how much better is this action than average"
+   - No need for absolute values, only differences
+   - Relative values are easier to estimate accurately
+
+3. No Q network needed
+   - PPO / A2C don't need a Q network at all
+   - Only V-critic + TD advantage
+   - One fewer network simplifies training
+```
+
+#### Historical timeline
+
+Advantage wasn't invented all at once — it emerged in stages:
+
+```text
+1993  Baird "Advantage Updating"
+      First proposed Q = V + A decomposition
+      Motivation: in continuous-time problems, Q differences are too small to learn
+      Directly learning A (the residual) is easier than learning full Q
+
+1999  Sutton et al. Policy Gradient Theorem
+      Proved policy gradient can be expressed using Q(s,a)
+      Subtracting baseline V(s) doesn't change expectation but reduces variance
+      Q(s,a) - V(s) = A(s,a) ← advantage appears naturally
+
+2016  Schulman et al. GAE (Generalized Advantage Estimation)
+      Provided bias-variance tradeoff for advantage estimation
+      A^GAE = Σ (γλ)^t δ_t
+      λ=1 → high-variance unbiased (Monte Carlo advantage)
+      λ=0 → low-variance biased (single-step TD advantage)
+      Analogous to TD(λ)
+
+2016  Wang et al. Dueling DQN
+      Applied Q = V + A decomposition in Q-learning architecture
+      Network splits into two streams: one for V(s), one for A(s,a)
+      Advantage used within value-based methods
+```
+
+#### Why did advantage flourish in policy gradient but not in Q-learning?
+
+```text
+In policy gradient methods (PPO / A2C):
+  - Already need a baseline to reduce variance
+  - V(s) is the natural baseline
+  - A = r + γV(s') - V(s) is directly the advantage
+  - V-first causality is the most natural fit
+  → advantage became standard
+
+In Q-learning methods (DQN):
+  - Q itself is the primary quantity; learning Q directly is more natural
+  - Q = V + A decomposition has an identifiability problem:
+    constants can shift freely between V and A
+    (Dueling DQN patches this with A - mean(A), but it's a heuristic)
+  - In discrete action spaces, max_a Q implicitly recovers V, so decomposition
+    doesn't have a clear advantage
+  → advantage only appears as network architecture (Dueling DQN), not mainstream
+```
+
+#### Comparison overview
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│           Q-first vs V-first: Causal Comparison              │
+├──────────────────────┬───────────────────────────────────────┤
+│ Q-first (traditional)│ V-first (advantage)                   │
+├──────────────────────┼───────────────────────────────────────┤
+│ Primary: Q(s,a)      │ Primary: V(s)                         │
+│ High-dim (state×act) │ Low-dim (state only)                  │
+│ High variance        │ Low variance                          │
+│ max amplifies noise  │ Not affected by max                   │
+│ V = max Q (derived)  │ A = r+γV(s')-V(s) (constructed)      │
+│ Needs Q network      │ No Q network needed                   │
+│ Repr: DQN, DDPG      │ Repr: PPO, A2C                       │
+│ Suits: off-policy    │ Suits: on/near on-policy              │
+└──────────────────────┴───────────────────────────────────────┘
+```
+
+#### One-sentence summary
+
+```text
+Advantage is not just a "trick" —
+it is a causal inversion:
+from "learn Q first, derive V" to "learn V first, construct advantage on-the-fly."
+
+V is more stable, lower-dimensional, action-independent.
+Advantage only cares about relative action quality, not absolute values.
+
+This inversion lets PPO / A2C operate without any Q network at all —
+just one V-critic is enough to train the policy.
+```
+
 ---
 
 ## 8. Understanding from the Action Modeling Perspective: Discrete Actions, Continuous Actions, Deterministic vs. Stochastic
