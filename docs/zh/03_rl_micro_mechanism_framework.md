@@ -1368,9 +1368,9 @@ Advantage 只关心 action 之间的相对好坏，不关心绝对值。
 只用一个 V-critic 就能训练 policy。
 ```
 
-### 7.12 PPO 为什么工业好用：拆解稳定性的来源
+### 7.12 训练稳定性与规模化：以 PPO 为例拆解
 
-PPO 是目前工业界使用最广泛的 RL 算法（机器人、RLHF、仿真训练）。它的稳定性不是来自一个 trick，而是多层防御叠加。但这些层有主次之分。
+RL 算法能否工业落地，最终取决于两件事：**训练稳定性**（不崩、不震荡、可复现）和**规模化能力**（能并行、能扩大模型/数据、工程简单）。PPO 是目前在这两个维度上表现最均衡的算法，拆解它的稳定性来源有助于理解 RL 工业化的核心约束。
 
 #### 核心信号质量：GAE + V-critic（最本质）
 
@@ -1480,6 +1480,74 @@ PPO 的 clip ratio 是工程上漂亮的护栏，
 
 GAE 决定了方向准不准；Clip 决定了每步走不走过头。
 两者缺一不可，但 GAE 更本质。
+```
+
+#### 规模化能力：PPO 为什么比 SAC/TD3 更适合大规模训练
+
+训练稳定性只是一半，另一半是**规模化**——能否用更多 GPU、更大模型、更多环境并行来提升性能。
+
+```text
+PPO 的规模化优势：
+
+1. 数据并行天然适配
+   - Near on-policy：每轮采样一批数据，用完即弃
+   - 可以用 N 个环境并行 rollout，线性加速采样
+   - vectorized env 是 PPO 的标配（几百到几千个并行环境）
+
+2. 计算流程简单
+   - 无 replay buffer → 无 off-policy 修正
+   - 一阶优化（SGD/Adam）→ 无二阶计算（对比 TRPO 的共轭梯度）
+   - 多 epoch minibatch → 标准 DataLoader 流程，跟 SL 一样
+
+3. 对超参数不敏感
+   - clip ε = 0.2，GAE λ = 0.95 几乎是万能默认值
+   - 不需要调 temperature（SAC）、replay ratio、target update 频率等
+
+4. 与大模型兼容
+   - RLHF 用 PPO 训练 175B LLM（InstructGPT）
+   - 因为 on-policy 数据分布干净，不需要 replay buffer 存大量历史数据
+   - 梯度计算跟 SL 一样，现有分布式训练框架直接可用
+```
+
+对比 off-policy 方法的规模化困难：
+
+```text
+SAC / TD3 的规模化问题：
+
+1. Replay buffer 是瓶颈
+   - 存储百万条 transition 需要大量内存
+   - 采样效率取决于 buffer 管理策略
+   - PER（优先采样）增加了工程复杂度
+
+2. Off-policy 修正有上限
+   - 数据越旧，跟当前 policy 分布偏差越大
+   - IS 修正有方差问题
+   - 数据利用率理论上高，但实际受分布漂移限制
+
+3. 多网络训练复杂
+   - Actor + 2 Critics + 2 Target Critics + α（SAC 需要 6 个模型）
+   - 交替更新的时序依赖增加了分布式训练的复杂度
+
+4. 超参数敏感
+   - temperature α、target update τ、replay ratio 都需要调
+   - 不同任务的最佳超参差异大
+```
+
+训练稳定性 × 规模化的总结：
+
+| 维度 | PPO | SAC/TD3 |
+|---|---|---|
+| 训练稳定性 | GAE + clip 多层防御 | Double Q + target net + entropy |
+| 数据并行 | 天然适配（vectorized env） | replay buffer 是瓶颈 |
+| 工程复杂度 | 低（一阶优化、标准流程） | 高（多网络、交替更新） |
+| 超参敏感度 | 低（几乎万能默认值） | 高（task-dependent） |
+| 大模型兼容 | 好（RLHF 标准选择） | 差（replay 内存开销大） |
+| 数据效率 | 低（用完即弃） | 高（replay 复用） |
+
+```text
+最终选择往往是：
+  数据便宜 + 需要大规模并行 → PPO（RLHF、仿真、游戏）
+  数据昂贵 + 需要高样本效率 → SAC/TD3（真实机器人、小规模实验）
 ```
 
 ---

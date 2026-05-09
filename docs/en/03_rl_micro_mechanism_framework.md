@@ -1376,9 +1376,9 @@ This inversion lets PPO / A2C operate without any Q network at all —
 just one V-critic is enough to train the policy.
 ```
 
-### 7.12 Why PPO Works in Industry: Decomposing the Sources of Stability
+### 7.12 Training Stability and Scalability: PPO as Case Study
 
-PPO is the most widely used RL algorithm in industry (robotics, RLHF, simulation training). Its stability comes not from a single trick, but from layered defenses. These layers have a clear hierarchy of importance.
+Whether an RL algorithm can be deployed in industry ultimately depends on two things: **training stability** (no crashes, no oscillations, reproducible) and **scalability** (parallelizable, scales with model/data size, engineering-simple). PPO is currently the most balanced algorithm on both dimensions. Decomposing its stability sources helps understand the core constraints of industrial RL.
 
 #### Core signal quality: GAE + V-critic (most fundamental)
 
@@ -1491,6 +1491,74 @@ into a usable optimization problem is the V-critic baseline and GAE advantage es
 
 GAE determines whether the direction is accurate; Clip determines whether each step overshoots.
 Both are necessary, but GAE is more fundamental.
+```
+
+#### Scalability: Why PPO Scales Better Than SAC/TD3
+
+Training stability is only half the story. The other half is **scalability** -- can you use more GPUs, larger models, and more parallel environments to improve performance?
+
+```text
+PPO's scalability advantages:
+
+1. Data parallelism is a natural fit
+   - Near on-policy: collect a batch each round, discard after use
+   - N environments roll out in parallel, linear speedup in sampling
+   - Vectorized env is PPO standard (hundreds to thousands in parallel)
+
+2. Simple computational flow
+   - No replay buffer → no off-policy corrections
+   - First-order optimization (SGD/Adam) → no second-order (vs TRPO's conjugate gradient)
+   - Multi-epoch minibatch → standard DataLoader, identical to SL
+
+3. Hyperparameter insensitivity
+   - clip ε=0.2, GAE λ=0.95 are near-universal defaults
+   - No need to tune temperature (SAC), replay ratio, target update frequency
+
+4. Large model compatibility
+   - RLHF uses PPO to train 175B LLMs (InstructGPT)
+   - On-policy data distribution is clean, no need for massive replay storage
+   - Gradient computation identical to SL, existing distributed frameworks work directly
+```
+
+Contrast with off-policy scalability challenges:
+
+```text
+SAC / TD3 scalability issues:
+
+1. Replay buffer is a bottleneck
+   - Storing millions of transitions needs large memory
+   - Sampling efficiency depends on buffer management
+   - PER (prioritized sampling) adds engineering complexity
+
+2. Off-policy correction has limits
+   - Older data has larger distribution mismatch with current policy
+   - IS correction has variance issues
+   - Theoretical data efficiency is high, but distribution drift limits practice
+
+3. Multi-network training is complex
+   - Actor + 2 Critics + 2 Target Critics + α (SAC needs 6 models)
+   - Alternating update temporal dependencies complicate distributed training
+
+4. Hyperparameter sensitivity
+   - Temperature α, target update τ, replay ratio all need tuning
+   - Best hyperparams vary significantly across tasks
+```
+
+Stability x Scalability summary:
+
+| Dimension | PPO | SAC/TD3 |
+|---|---|---|
+| Training stability | GAE + clip layered defense | Double Q + target net + entropy |
+| Data parallelism | Natural fit (vectorized env) | Replay buffer is bottleneck |
+| Engineering complexity | Low (first-order, standard flow) | High (multi-network, alternating) |
+| Hyperparam sensitivity | Low (near-universal defaults) | High (task-dependent) |
+| Large model compat. | Good (RLHF standard choice) | Poor (replay memory overhead) |
+| Data efficiency | Low (discard after use) | High (replay reuse) |
+
+```text
+The practical choice is often:
+  Data is cheap + need massive parallelism → PPO (RLHF, simulation, games)
+  Data is expensive + need high sample efficiency → SAC/TD3 (real robots, small-scale)
 ```
 
 ---
